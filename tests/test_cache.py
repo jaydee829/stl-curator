@@ -15,11 +15,18 @@ def cache():
     return Cache(Path(":memory:"))
 
 
-def test_upsert_and_unchanged(cache):
+@pytest.mark.parametrize(
+    "probe,expected",
+    [
+        (rec(), True),  # same path, same hash
+        (rec(h="h2"), False),  # same path, different hash
+        (rec(rel="other.stl"), False),  # unknown path
+    ],
+    ids=["same_path_same_hash", "same_path_diff_hash", "unknown_path"],
+)
+def test_file_unchanged(cache, probe, expected):
     cache.upsert_file(rec())
-    assert cache.file_unchanged(rec()) is True
-    assert cache.file_unchanged(rec(h="h2")) is False
-    assert cache.file_unchanged(rec(rel="other.stl")) is False
+    assert cache.file_unchanged(probe) is expected
 
 
 def test_upsert_same_path_updates(cache):
