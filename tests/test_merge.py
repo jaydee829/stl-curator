@@ -118,6 +118,24 @@ def test_merge_deep_copies_existing_preserves_list_identity():
     assert merged["tags"] is not existing["tags"]
 
 
+def test_files_duplicate_hash_entries_stay_paired_by_path():
+    """Two members sharing a hash (identical content) must not collapse onto one entry.
+
+    Regression for a convergence bug: naive hash-only matching sent both existing
+    entries to whichever generated entry with that hash came first, silently
+    dropping one path from the note on every re-merge.
+    """
+    existing = [
+        {"path": "a.stl", "hash": "h1", "role": "model", "footprint": "fp/a.json"},
+        {"path": "a_copy.stl", "hash": "h1", "role": "model", "footprint": "fp/a.json"},
+    ]
+    generated = [
+        {"path": "a.stl", "hash": "h1", "role": "model", "footprint": "fp/a.json"},
+        {"path": "a_copy.stl", "hash": "h1", "role": "model", "footprint": "fp/a.json"},
+    ]
+    assert merge_files_list(existing, generated) == existing
+
+
 # FINDING 4: Deep copy generated when existing is None
 def test_merge_deep_copies_generated_when_existing_none():
     generated = dict(GEN, tags=["needs-review"])

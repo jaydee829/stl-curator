@@ -12,6 +12,7 @@ from stl_curator.vault import (
     ensure_entity_note,
     infer_creator_campaign,
     note_path,
+    plan_model_note,
     resolve_note_path,
     slugify,
     write_model_note,
@@ -260,6 +261,39 @@ def test_note_path_unicode_hash_computation(tmp_path):
     # Path should contain the hash
     assert expected_hash in path.stem
     assert path.name == f"{expected_hash}--goblin.md"
+
+
+@pytest.mark.parametrize(
+    "existing_fm,generated_fm,expected",
+    [
+        pytest.param(
+            None,
+            {"id": "g1", "type": "model", "status": "unprinted"},
+            "created",
+            id="missing_file",
+        ),
+        pytest.param(
+            {"id": "g1", "type": "model", "status": "unprinted"},
+            {"id": "g1", "type": "model", "status": "unprinted"},
+            "unchanged",
+            id="identical_fm",
+        ),
+        pytest.param(
+            {"id": "g1", "type": "model", "status": "unprinted"},
+            {"id": "g1", "type": "model", "status": "unprinted", "height_mm": 5.0},
+            "updated",
+            id="differing_fm",
+        ),
+    ],
+)
+def test_plan_model_note(tmp_path, existing_fm, generated_fm, expected):
+    p = tmp_path / "vault" / "models" / "n.md"
+    if existing_fm is not None:
+        write_model_note(p, dict(existing_fm), "G")
+    result = plan_model_note(p, generated_fm)
+    assert result == expected
+    if expected == "created":
+        assert not p.exists()
 
 
 def test_resolve_note_path_malformed_yaml_no_crash(tmp_path):

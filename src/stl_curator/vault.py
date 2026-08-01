@@ -25,22 +25,37 @@ HUMAN_FIELDS = {"status", "tags", "title", "creator", "campaign", "assembly", "s
 
 
 def merge_files_list(existing, generated):
+    """Merge existing (human-visible) file entries with freshly generated ones.
+
+    Matches each existing entry to a generated entry preferring an exact path
+    match, falling back to a hash match (rename tracking). Path-first matching
+    is required so that two members sharing an identical content hash (e.g.
+    duplicate files) each keep their own entry instead of both collapsing onto
+    whichever generated entry the naive hash lookup found first.
+    """
     existing = existing or []
+    remaining = list(generated)
+
+    def _pop_match(pred):
+        for i, g in enumerate(remaining):
+            if pred(g):
+                return remaining.pop(i)
+        return None
+
     out = []
-    seen = set()
     for e in existing:
-        h = e["hash"]
-        gen = next((g for g in generated if g["hash"] == h), None)
+        gen = _pop_match(lambda g, path=e["path"]: g["path"] == path)
+        if gen is None:
+            gen = _pop_match(lambda g, hash_=e["hash"]: g["hash"] == hash_)
         entry = dict(e)
         if gen is not None:
             entry["path"] = gen["path"]  # machine fact
+            entry["hash"] = gen["hash"]  # machine fact
             # Footprint is machine-owned: generated wins when present, existing preserved when absent
             if "footprint" in gen:
                 entry["footprint"] = gen["footprint"]
         out.append(entry)
-        seen.add(h)
-    new = [g for g in generated if g["hash"] not in seen]
-    out.extend(sorted((dict(g) for g in new), key=lambda g: g["path"]))
+    out.extend(sorted((dict(g) for g in remaining), key=lambda g: g["path"]))
     return out
 
 
@@ -255,6 +270,18 @@ def ensure_entity_note(vault_dir: Path, kind: str, name: str, creator: str | Non
     with open(path, "w", encoding="utf-8") as f:
         frontmatter.dump(note, f)
     return True
+
+
+def plan_model_note(path: Path, generated_fm: dict) -> str:
+    """Predict the write_model_note result without writing anything to disk.
+
+    Used by dry-run ingest to report created/updated/unchanged counts.
+    """
+    if not path.exists():
+        return "created"
+    note = frontmatter.load(path)
+    merged = merge_frontmatter(dict(note.metadata), generated_fm)
+    return "unchanged" if merged == dict(note.metadata) else "updated"
 
 
 def write_vault_config(vault_dir: Path) -> None:
