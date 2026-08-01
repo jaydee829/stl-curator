@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 MACHINE_FIELDS = {
     "id",
     "thumb",
@@ -23,7 +25,8 @@ def merge_files_list(existing, generated):
         entry = dict(e)
         if gen is not None:
             entry["path"] = gen["path"]  # machine fact
-            if "footprint" not in entry and "footprint" in gen:
+            # Footprint is machine-owned: generated wins when present, existing preserved when absent
+            if "footprint" in gen:
                 entry["footprint"] = gen["footprint"]
         out.append(entry)
         seen.add(h)
@@ -34,8 +37,8 @@ def merge_files_list(existing, generated):
 
 def merge_frontmatter(existing: dict | None, generated: dict) -> dict:
     if existing is None:
-        return generated
-    merged = dict(existing)  # human keys survive
+        return copy.deepcopy(generated)
+    merged = copy.deepcopy(existing)  # deep copy to avoid aliasing nested mutables
     for k, v in generated.items():
         if k == "files":
             merged["files"] = merge_files_list(existing.get("files"), v)
@@ -46,4 +49,8 @@ def merge_frontmatter(existing: dict | None, generated: dict) -> dict:
                 merged[k] = v
         else:
             merged.setdefault(k, v)
+    # Clear stale machine fields (present in existing but absent from generated)
+    for field in MACHINE_FIELDS:
+        if field in merged and field not in generated:
+            del merged[field]
     return merged

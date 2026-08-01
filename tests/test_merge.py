@@ -85,3 +85,44 @@ def test_files_footprint_preserved():
     ]
     generated = [{"path": "a.stl", "hash": "h1", "role": "model"}]
     assert merge_files_list(existing, generated)[0]["footprint"] == "footprints/h1/h1.json"
+
+
+# FINDING 1: Stale machine fields must clear when absent from generated
+def test_machine_field_clears_when_absent_from_generated():
+    existing = dict(GEN, mesh_error=True)
+    generated = dict(GEN)
+    merged = merge_frontmatter(existing, generated)
+    assert "mesh_error" not in merged
+
+
+def test_machine_field_still_updates_when_present_in_generated():
+    existing = dict(GEN, mesh_error=False)
+    generated = dict(GEN, mesh_error=True)
+    merged = merge_frontmatter(existing, generated)
+    assert merged["mesh_error"] is True
+
+
+# FINDING 2: Footprint is machine-owned and refreshes when generated has it
+def test_files_footprint_refreshed_when_in_generated():
+    existing = [{"path": "a.stl", "hash": "h1", "role": "model", "footprint": "old.json"}]
+    generated = [{"path": "a.stl", "hash": "h1", "role": "model", "footprint": "new.json"}]
+    assert merge_files_list(existing, generated)[0]["footprint"] == "new.json"
+
+
+# FINDING 3: Deep copy to avoid aliasing nested mutables
+def test_merge_deep_copies_existing_preserves_list_identity():
+    existing = dict(GEN, tags=["custom", "tag"])
+    merged = merge_frontmatter(existing, dict(GEN))
+    # Lists should be equal but not the same object
+    assert merged["tags"] == existing["tags"]
+    assert merged["tags"] is not existing["tags"]
+
+
+# FINDING 4: Deep copy generated when existing is None
+def test_merge_deep_copies_generated_when_existing_none():
+    generated = dict(GEN, tags=["needs-review"])
+    merged = merge_frontmatter(None, generated)
+    # Should be equal but not the same object
+    assert merged == generated
+    assert merged is not generated
+    assert merged["tags"] is not generated["tags"]
