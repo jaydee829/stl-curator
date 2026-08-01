@@ -99,11 +99,13 @@ def render_thumbnail(stl_path: Path, dest: Path, size_px: int = 512) -> bool:
             return False
     if not png_bytes:
         return False
-    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_png = dest.with_suffix(".tmp.png")
-    tmp_png.write_bytes(png_bytes)
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp_png.write_bytes(png_bytes)
         normalize_to_webp(tmp_png, dest)
+    except Exception:  # noqa: BLE001 — spec: render_thumbnail never raises
+        return False
     finally:
         tmp_png.unlink(missing_ok=True)
     return True
@@ -113,7 +115,10 @@ def render_thumbnail(stl_path: Path, dest: Path, size_px: int = 512) -> bool:
 def render_available() -> bool:
     import tempfile
 
-    with tempfile.TemporaryDirectory() as td:
-        p = Path(td) / "probe.stl"
-        trimesh.creation.box(extents=[1, 1, 1]).export(p)
-        return render_thumbnail(p, Path(td) / "probe.webp", size_px=8)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "probe.stl"
+            trimesh.creation.box(extents=[1, 1, 1]).export(p)
+            return render_thumbnail(p, Path(td) / "probe.webp", size_px=8)
+    except Exception:  # noqa: BLE001 — probe must never raise
+        return False

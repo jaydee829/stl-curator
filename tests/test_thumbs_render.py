@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 import trimesh
 
+import stl_curator.thumbs as thumbs_mod
 from stl_curator.thumbs import render_available, render_thumbnail
 
 pytestmark = pytest.mark.skipif(
@@ -34,3 +35,14 @@ def test_render_failure_returns_false(tmp_path):
     bad = tmp_path / "bad.stl"
     bad.write_bytes(b"junk")
     assert render_thumbnail(bad, tmp_path / "out.webp") is False
+
+
+def test_render_output_stage_failure_returns_false(cone_stl, tmp_path, monkeypatch):
+    def _raise(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(thumbs_mod, "normalize_to_webp", _raise)
+    dest = tmp_path / "out.webp"
+    assert render_thumbnail(cone_stl, dest) is False
+    assert not dest.exists()
+    assert list(tmp_path.glob("*.tmp.png")) == []
