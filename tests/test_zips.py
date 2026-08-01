@@ -34,3 +34,32 @@ def test_bad_zip_reported_not_raised(tmp_path):
     res = extract_needed_zips(scan_store(tmp_path), tmp_path)
     assert res.extracted == []
     assert res.errors and res.errors[0][0] == "C/bad.zip"
+
+
+def test_cleans_partial_extraction_on_error(tmp_path, monkeypatch):
+    zip_path = tmp_path / "C" / "kit.zip"
+    make_zip(zip_path, ["a.stl"])
+    target = zip_path.with_suffix("")
+
+    # Monkeypatch extractall to create target and a partial file, then raise OSError
+    original_extractall = zipfile.ZipFile.extractall
+
+    def failing_extractall(self, path=None, members=None, pwd=None):
+        path_obj = Path(path) if path else Path(".")
+        path_obj.mkdir(parents=True, exist_ok=True)
+        (path_obj / "partial.stl").write_text("incomplete")
+        raise OSError("Simulated extraction failure")
+
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", failing_extractall)
+
+    # First call should fail, error recorded, target cleaned up
+    res = extract_needed_zips(scan_store(tmp_path), tmp_path)
+    assert res.extracted == []
+    assert res.errors and res.errors[0][0] == "C/kit.zip"
+    assert not target.exists(), "Partial extraction should be cleaned up"
+
+    # Restore original extractall and call again — should succeed now
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", original_extractall)
+    res = extract_needed_zips(scan_store(tmp_path), tmp_path)
+    assert res.extracted == [target]
+    assert (target / "a.stl").exists()
