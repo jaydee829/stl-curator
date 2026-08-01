@@ -14,7 +14,11 @@ This file tracks important project configuration, constants, and environment det
 - **Package/env management**: `uv` — `uv sync` for deps, `uv run <cmd>` for everything
 - **Lint/format**: `ruff` as a uv dev dependency (`uv run ruff check`, `uv run ruff format`) — not installed globally
 - **Vault app**: Obsidian (reads the generated markdown vault; Dataview/Bases for queries)
-- **Repo split (ADR-002)**: code repo = public GitHub; `vault/` = separate private repo, gitignored in the code repo
+- **Repo split (ADR-002)**: code repo = public https://github.com/jaydee829/stl-curator;
+  `vault/` = private https://github.com/jaydee829/stl-vault (gitignored in the code repo)
+- **CI**: GitHub Actions (`.github/workflows/ci.yml`) — uv sync, ruff check, ruff format
+  --check, pytest on ubuntu + windows; render tests self-skip headless; `docs/` excluded
+  from ruff (plan markdown is not a format target)
 - **Primary Workflow**: `typer` CLI ingest pipeline run against the local STL store (planned)
 - **Sample data**: `example_stls/` — staging area for test models (populated with a real
   386-file Archvillain Games release; verified end-to-end 2026-08-01, see
