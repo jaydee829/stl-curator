@@ -43,10 +43,21 @@ def test_mesh_facts_roundtrip(cache):
     assert row["height_mm"] == 48.2 and row["watertight"] == 1
 
 
-def test_group_claimed(cache):
-    cache.upsert_group("g1", ["h1", "h2"], 0.9, human_claimed=True)
-    cache.upsert_group("g2", ["h3"], 0.5)
-    assert cache.claimed_hashes() == {"h1", "h2"}
+def test_group_claimed_paths(cache):
+    cache.upsert_group("g1", ["h1", "h2"], 0.9, human_claimed=True, member_paths=["a.stl", "b.stl"])
+    cache.upsert_group("g2", ["h3"], 0.5, member_paths=["c.stl"])
+    assert cache.claimed_paths() == {"a.stl", "b.stl"}
+
+
+def test_claimed_paths_scoped_by_path_not_hash(cache):
+    """FINDING NEW-C: two groups can legitimately share a hash (a
+    content-identical file cataloged in two different folders) without
+    sharing a location. Claiming one group's path must not claim the
+    other's path just because they happen to have the same hash — claims
+    are location-scoped, not content-scoped."""
+    cache.upsert_group("g1", ["h1"], 0.9, human_claimed=True, member_paths=["A/dup.stl"])
+    cache.upsert_group("g2", ["h1"], 0.5, member_paths=["B/dup.stl"])
+    assert cache.claimed_paths() == {"A/dup.stl"}
 
 
 def test_duplicates(cache):

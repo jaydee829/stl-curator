@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS mesh_facts(
   watertight INTEGER, error TEXT);
 CREATE TABLE IF NOT EXISTS groups(
   group_id TEXT PRIMARY KEY, member_hashes TEXT NOT NULL,
+  member_paths TEXT NOT NULL DEFAULT '[]',
   confidence REAL, human_claimed INTEGER DEFAULT 0);
 CREATE TABLE IF NOT EXISTS thumbs(hash TEXT PRIMARY KEY, source TEXT);
 """
@@ -61,10 +62,30 @@ class Cache:
         member_hashes: list[str],
         confidence: float,
         human_claimed: bool = False,
+        member_paths: list[str] | None = None,
     ) -> None:
+        """Upsert a group row.
+
+        `member_hashes` and `member_paths` are parallel but independent
+        views of a group's membership: hashes are content identity (what a
+        file IS), paths are location identity (WHERE it is). They are not
+        interchangeable — the same hash can legitimately appear at two
+        different paths (content-identical files in different folders), so
+        claim/exclusion decisions must key off `member_paths`, never
+        `member_hashes` alone (see `claimed_paths`). `member_paths` defaults
+        to an empty list for callers that only care about hash bookkeeping
+        (e.g. mesh-fact-adjacent tests).
+        """
         self.conn.execute(
-            "INSERT OR REPLACE INTO groups VALUES(?,?,?,?)",
-            (group_id, json.dumps(sorted(member_hashes)), confidence, int(human_claimed)),
+            "INSERT OR REPLACE INTO groups(group_id, member_hashes, member_paths, "
+            "confidence, human_claimed) VALUES(?,?,?,?,?)",
+            (
+                group_id,
+                json.dumps(sorted(member_hashes)),
+                json.dumps(sorted(member_paths or [])),
+                confidence,
+                int(human_claimed),
+            ),
         )
         self.conn.commit()
 
@@ -76,10 +97,18 @@ class Cache:
             return set()
         return set(json.loads(row["member_hashes"]))
 
-    def claimed_hashes(self) -> set[str]:
+    def claimed_paths(self) -> set[str]:
+        """Rel-paths excluded from future regrouping (human-diverged groups).
+
+        Path-scoped, not hash-scoped: two different physical files can share
+        a content hash (a legitimate cross-folder duplicate) without sharing
+        a location. Excluding by hash would collaterally exclude every file
+        with that hash anywhere in the store the moment ANY one of them got
+        claimed — this is what a rel_path-keyed exclusion set avoids.
+        """
         out: set[str] = set()
-        for row in self.conn.execute("SELECT member_hashes FROM groups WHERE human_claimed=1"):
-            out.update(json.loads(row["member_hashes"]))
+        for row in self.conn.execute("SELECT member_paths FROM groups WHERE human_claimed=1"):
+            out.update(json.loads(row["member_paths"]))
         return out
 
     def set_thumb(self, hash: str, source: str) -> None:

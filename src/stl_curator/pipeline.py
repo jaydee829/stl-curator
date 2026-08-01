@@ -120,7 +120,7 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
     cache = Cache(cfg.cache_db if not dry_run else Path(":memory:"))
     for rec in records:
         cache.upsert_file(rec)
-    claimed = cache.claimed_hashes()
+    claimed_paths = cache.claimed_paths()
 
     images_by_folder: dict[str, list[FileRecord]] = defaultdict(list)
     for rec in records:
@@ -134,8 +134,12 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
 
     # Human-diverged (claimed) files are excluded from future regrouping: a
     # file the human has already reassigned/removed must not be reabsorbed
-    # into a fresh machine grouping on the next ingest.
-    unclaimed = [r for r in records if r.hash not in claimed]
+    # into a fresh machine grouping on the next ingest. Scoped by rel_path,
+    # not hash: two different physical files can share content (a
+    # legitimate cross-folder duplicate) without sharing a location, so
+    # excluding by hash would collaterally exclude an unrelated file that
+    # merely happens to have the same content.
+    unclaimed = [r for r in records if r.rel_path not in claimed_paths]
     for group in _compute_groups(unclaimed, vocab, cfg):
         folder = str(Path(group.members[0].record.rel_path).parent)
         summary.groups += 1
@@ -165,23 +169,41 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
         if dry_run:
             result = plan_model_note(npath, fm, prior_hashes)
         else:
-            result, final_hashes = write_model_note(npath, fm, group.title, prior_hashes)
+            result, final_hashes, final_paths = write_model_note(
+                npath, fm, group.title, prior_hashes
+            )
             human_claimed = final_hashes != group_hashes
             cache.upsert_group(
-                group.id, sorted(final_hashes), group.confidence, human_claimed=human_claimed
+                group.id,
+                sorted(final_hashes),
+                group.confidence,
+                human_claimed=human_claimed,
+                member_paths=sorted(final_paths),
             )
             if human_claimed:
                 # A hash the group generated but the note no longer carries
                 # was removed (or relocated elsewhere) by a human. Tombstone
-                # it as its own permanently-claimed row so claimed_hashes()
-                # excludes it from every future regrouping — otherwise it
-                # would resurface as its own fragment note one ingest later,
-                # since it's still physically on disk but isn't a member of
-                # any human_claimed group.
-                removed = group_hashes - final_hashes
-                if removed:
+                # it — keyed by the REMOVED ENTRIES' OWN PATHS, not by hash —
+                # so claimed_paths() excludes exactly those physical files
+                # from every future regrouping, and nothing else. Keying by
+                # hash instead would be wrong: a content-identical duplicate
+                # living in a different, untouched folder could share this
+                # hash without ever having been removed from its own note,
+                # and a hash-global exclusion would collaterally strip it
+                # out of its own folder's next regrouping too, fragmenting
+                # an otherwise-untouched note. Without this tombstone at
+                # all, the removed file would resurface as its own fragment
+                # note one ingest later, since it's still physically on disk
+                # but isn't a member of any human_claimed group.
+                removed_hashes = group_hashes - final_hashes
+                if removed_hashes:
+                    removed_paths = {f["path"] for f in fm["files"] if f["hash"] in removed_hashes}
                     cache.upsert_group(
-                        f"{group.id}-removed", sorted(removed), 1.0, human_claimed=True
+                        f"{group.id}-removed",
+                        sorted(removed_hashes),
+                        1.0,
+                        human_claimed=True,
+                        member_paths=sorted(removed_paths),
                     )
             ensure_entity_note(cfg.vault_dir, "creators", creator)
             if campaign:
@@ -223,8 +245,13 @@ def rebuild_cache(cfg: Config) -> int:
     from disk + vault alone: for each machine group with a matching note, any
     hash the machine generated for it that the note doesn't carry AND that
     doesn't appear in ANY vault note (i.e. wasn't relocated into a different,
-    already-divergent note) was removed by a human — tombstone it the same
-    way ingest does.
+    already-divergent note) was removed by a human — tombstoned by THAT
+    MACHINE ENTRY'S OWN PATH, not by hash. Path-scoping matters here exactly
+    as it does in ingest: two machine entries in two different folders can
+    share a hash (a legitimate cross-folder duplicate) — tombstoning by hash
+    would collaterally exclude the untouched folder's copy from all future
+    regrouping too. Keying the tombstone by the specific removed entry's
+    path means only that one physical file is ever excluded.
 
     Args:
         cfg: Configuration containing store_root, vault_dir, and cache_db paths
@@ -239,11 +266,15 @@ def rebuild_cache(cfg: Config) -> int:
         for rec in records:
             cache.upsert_file(rec)
         vocab = load_vocab()
-        machine_hashes_by_id = {
-            g.id: {m.record.hash for m in g.members} for g in _compute_groups(records, vocab, cfg)
+        # (hash, rel_path) pairs per machine group id — path-aware, since a
+        # group can legitimately contain two entries sharing a hash from
+        # different physical files (duplicate content within one folder).
+        machine_entries_by_id: dict[str, list[tuple[str, str]]] = {
+            g.id: [(m.record.hash, m.record.rel_path) for m in g.members]
+            for g in _compute_groups(records, vocab, cfg)
         }
 
-        parsed_notes: list[tuple[str, set[str], float]] = []
+        parsed_notes: list[tuple[str, set[str], set[str], float]] = []
         models_dir = cfg.vault_dir / "models"
         if models_dir.exists():
             for note_file in sorted(models_dir.glob("*.md")):
@@ -253,8 +284,9 @@ def rebuild_cache(cfg: Config) -> int:
                     files = fm.get("files") or []
                     if fm.get("id") and files:
                         note_hashes = {f["hash"] for f in files}
+                        note_paths = {f["path"] for f in files}
                         parsed_notes.append(
-                            (fm["id"], note_hashes, fm.get("group_confidence", 1.0))
+                            (fm["id"], note_hashes, note_paths, fm.get("group_confidence", 1.0))
                         )
                 except Exception:  # noqa: BLE001, S112
                     # Corrupt or unparseable note; skip it but continue processing others
@@ -264,24 +296,40 @@ def rebuild_cache(cfg: Config) -> int:
         # A hash relocated by hand into a different note is already covered:
         # that note's own membership diverges from ITS machine group, so it's
         # restored human_claimed=True below and the hash is claimed via that
-        # row. Only a hash absent from every vault note was truly removed.
+        # row's own member_paths. Only a hash absent from every vault note
+        # was truly removed and needs a tombstone here.
         all_note_hashes: set[str] = set()
-        for _, note_hashes, _ in parsed_notes:
+        for _, note_hashes, _, _ in parsed_notes:
             all_note_hashes |= note_hashes
 
         restored = 0
-        for group_id, note_hashes, confidence in parsed_notes:
-            machine_hashes = machine_hashes_by_id.get(group_id)
+        for group_id, note_hashes, note_paths, confidence in parsed_notes:
+            machine_entries = machine_entries_by_id.get(group_id)
+            machine_hashes = (
+                {h for h, _ in machine_entries} if machine_entries is not None else None
+            )
             human_claimed = machine_hashes is None or note_hashes != machine_hashes
             cache.upsert_group(
-                group_id, sorted(note_hashes), confidence, human_claimed=human_claimed
+                group_id,
+                sorted(note_hashes),
+                confidence,
+                human_claimed=human_claimed,
+                member_paths=sorted(note_paths),
             )
             restored += 1
-            if machine_hashes is not None:
-                removed = (machine_hashes - note_hashes) - all_note_hashes
-                if removed:
+            if machine_entries is not None:
+                removed_entries = [
+                    (h, p)
+                    for h, p in machine_entries
+                    if h not in note_hashes and h not in all_note_hashes
+                ]
+                if removed_entries:
                     cache.upsert_group(
-                        f"{group_id}-removed", sorted(removed), 1.0, human_claimed=True
+                        f"{group_id}-removed",
+                        sorted({h for h, _ in removed_entries}),
+                        1.0,
+                        human_claimed=True,
+                        member_paths=sorted({p for _, p in removed_entries}),
                     )
         return restored
     finally:

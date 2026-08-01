@@ -156,7 +156,7 @@ def test_third_ingest_leaves_claimed_note_untouched(two_pose_store):
     """FINDING 1 effect (1), part B: after the removal is claimed, a further
     ingest must leave the note byte-for-byte untouched (it is no longer even
     reconsidered for regrouping — its remaining member is excluded from the
-    folder scan via claimed_hashes)."""
+    folder scan via claimed_paths)."""
     ingest(two_pose_store)
     note_path = _the_only_note(two_pose_store.vault_dir)
     post = frontmatter.load(note_path)
@@ -297,16 +297,11 @@ def test_removed_hash_tombstone_survives_cache_rebuild(two_pose_store):
     assert {p.name for p in models_dir.glob("*.md")} == before_names
 
 
-def test_cross_folder_duplicate_content_does_not_hijack_note(tmp_path):
-    """FINDING A regression: two campaign folders under one creator share
-    one content-identical file plus distinct partners. A raw hash-overlap
-    note match (no folder check) would hijack the first folder's note,
-    collapsing all three files into one note and mis-claiming the mangled
-    union. The folder-scoped overlap rule must fall back to the
-    disambiguated-fork path instead (the pre-fix collision behavior, which
-    is correct for genuinely unrelated groups). This test fails without the
-    folder check.
-    """
+def _cross_folder_dup_store(tmp_path) -> Config:
+    """Two campaign folders under one creator: 2024-03 has pose1+pose2;
+    2024-04 has a content-identical duplicate of pose1 plus a distinct
+    pose3. Same creator+title on both groups (same core "goblin"), so they
+    collide at the same base note path, sharing exactly one hash."""
     root = tmp_path / "store"
     (root / "Creator" / "2024-03").mkdir(parents=True)
     (root / "Creator" / "2024-04").mkdir(parents=True)
@@ -324,13 +319,26 @@ def test_cross_folder_duplicate_content_does_not_hijack_note(tmp_path):
     trimesh.creation.box(extents=[5, 5, 32]).export(
         root / "Creator" / "2024-04" / "goblin_pose3.stl"
     )
-    cfg = Config(
+    return Config(
         store_root=root,
         vault_dir=tmp_path / "vault",
         thumbs_dir=tmp_path / "thumbs",
         footprints_dir=tmp_path / "footprints",
         cache_db=tmp_path / "cache.db",
     )
+
+
+def test_cross_folder_duplicate_content_does_not_hijack_note(tmp_path):
+    """FINDING A regression: two campaign folders under one creator share
+    one content-identical file plus distinct partners. A raw hash-overlap
+    note match (no folder check) would hijack the first folder's note,
+    collapsing all three files into one note and mis-claiming the mangled
+    union. The folder-scoped overlap rule must fall back to the
+    disambiguated-fork path instead (the pre-fix collision behavior, which
+    is correct for genuinely unrelated groups). This test fails without the
+    folder check.
+    """
+    cfg = _cross_folder_dup_store(tmp_path)
 
     ingest(cfg)
 
@@ -354,3 +362,59 @@ def test_cross_folder_duplicate_content_does_not_hijack_note(tmp_path):
     s2 = ingest(cfg)
     assert (s2.created, s2.updated) == (0, 0)
     assert s2.unchanged == 2
+
+
+def test_cross_folder_duplicate_removal_does_not_exclude_sibling_copy(tmp_path):
+    """FINDING NEW-C regression: the shared hash from the two campaign
+    folders above is legitimately cataloged in BOTH notes (a genuine fork,
+    not a hijack — see the hijack test above). A human then deletes that
+    hash's entry from the 2024-03 note only, leaving the 2024-04 note's own
+    copy of the same content untouched. Path-scoped claims/tombstones must
+    exclude ONLY the specific removed path — never the hash globally — so
+    2024-04's legitimate copy (a different physical file, same content) is
+    never excluded from its own folder's future regrouping.
+
+    This test fails against hash-scoped claims: a hash-global tombstone
+    would make claimed_paths()-the-hash-version exclude 2024-04's copy from
+    every future ingest too, its folder would regroup without it, and its
+    partner file (goblin_pose3) would fork a duplicate singleton note —
+    compounding on every later ingest.
+    """
+    cfg = _cross_folder_dup_store(tmp_path)
+    ingest(cfg)
+
+    models_dir = cfg.vault_dir / "models"
+    original_note = cfg.vault_dir / "models" / "creator--goblin.md"
+    notes = list(models_dir.glob("*.md"))
+    assert len(notes) == 2
+    other_note = next(n for n in notes if n != original_note)
+
+    # Sanity: the other note is genuinely the 2024-04 fork, sharing the
+    # duplicated hash with the original note but living at a different path.
+    original_meta = frontmatter.load(original_note).metadata
+    other_meta = frontmatter.load(other_note).metadata
+    shared_hash = next(
+        f["hash"] for f in original_meta["files"] if f["path"] == "Creator/2024-03/goblin_pose1.stl"
+    )
+    assert shared_hash in {f["hash"] for f in other_meta["files"]}
+    assert "Creator/2024-04/goblin_pose1.stl" in {f["path"] for f in other_meta["files"]}
+
+    # Human deletes the shared-hash entry from the 2024-03 note only.
+    post = frontmatter.load(original_note)
+    post.metadata["files"] = [
+        f for f in post.metadata["files"] if f["path"] != "Creator/2024-03/goblin_pose1.stl"
+    ]
+    with open(original_note, "w", encoding="utf-8") as f:
+        frontmatter.dump(post, f)
+
+    other_before = other_note.read_bytes()
+    before_names = {p.name for p in models_dir.glob("*.md")}
+
+    ingest(cfg)  # divergence discovered on the original note; tombstone created
+    ingest(cfg)  # a fragment for 2024-04's stranded partner would appear here
+
+    assert other_note.read_bytes() == other_before
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+    original_after = frontmatter.load(original_note).metadata
+    assert {f["path"] for f in original_after["files"]} == {"Creator/2024-03/goblin_pose2.stl"}

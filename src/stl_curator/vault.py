@@ -266,25 +266,31 @@ def write_model_note(
     generated_fm: dict,
     title: str,
     prior_hashes: set[str] | frozenset[str] = frozenset(),
-) -> tuple[str, set[str]]:
+) -> tuple[str, set[str], set[str]]:
     """Write or update a model note, merging machine facts with human edits.
 
-    Returns (status, final_hashes) where status is "created" | "updated" |
-    "unchanged" and final_hashes is the resulting note's files hash set
-    (after merge) — the caller uses this to detect human divergence from the
-    freshly generated group membership.
+    Returns (status, final_hashes, final_paths) where status is
+    "created" | "updated" | "unchanged", final_hashes is the resulting
+    note's files hash set (after merge), and final_paths is the resulting
+    note's files path set (after merge) — the caller uses final_hashes to
+    detect human divergence from the freshly generated group membership,
+    and final_paths to record WHERE that final membership actually lives
+    (hash identity and location identity are tracked separately; see
+    Cache.upsert_group / Cache.claimed_paths).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         note = frontmatter.load(path)
         merged = merge_frontmatter(dict(note.metadata), generated_fm, prior_hashes)
-        final_hashes = {f["hash"] for f in merged.get("files", [])}
+        final_files = merged.get("files", [])
+        final_hashes = {f["hash"] for f in final_files}
+        final_paths = {f["path"] for f in final_files}
         if merged == dict(note.metadata):
-            return "unchanged", final_hashes
+            return "unchanged", final_hashes, final_paths
         note.metadata = merged
         with open(path, "w", encoding="utf-8") as f:
             frontmatter.dump(note, f)
-        return "updated", final_hashes
+        return "updated", final_hashes, final_paths
     note = frontmatter.Post(
         f"# {title}\n\n> Auto-generated stub. Notes below this line are yours; "
         "the pipeline never touches body text.\n",
@@ -292,8 +298,10 @@ def write_model_note(
     )
     with open(path, "w", encoding="utf-8") as f:
         frontmatter.dump(note, f)
-    final_hashes = {f["hash"] for f in generated_fm.get("files", [])}
-    return "created", final_hashes
+    final_files = generated_fm.get("files", [])
+    final_hashes = {f["hash"] for f in final_files}
+    final_paths = {f["path"] for f in final_files}
+    return "created", final_hashes, final_paths
 
 
 _CREATOR_BODY = """# {name}

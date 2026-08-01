@@ -25,13 +25,13 @@ def test_rebuild_restores_unclaimed_when_note_matches_machine(cfg):
     """A note whose files membership exactly matches its same-id machine
     group (no human edits since the last ingest) is restored as
     human_claimed=False — divergence-aware rebuild, not claim-all. The row
-    is still restored (n == 1); it's just not in claimed_hashes()."""
+    is still restored (n == 1); it's just not in claimed_paths()."""
     ingest(cfg)
     cfg.cache_db.unlink()  # simulate cache loss
     n = rebuild_cache(cfg)
     assert n == 1
     cache = Cache(cfg.cache_db)
-    assert cache.claimed_hashes() == set()
+    assert cache.claimed_paths() == set()
     cache.close()
 
 
@@ -132,7 +132,7 @@ def test_new_file_joins_group_after_rebuild(cfg):
 def test_rebuild_skips_malformed_yaml(cfg):
     """One good note + one malformed-YAML note → rebuild returns 1, no raise;
     the good note's membership is correctly restored despite the corrupt
-    sibling (checked via group_members, not claimed_hashes — the good note
+    sibling (checked via group_members, not claimed_paths — the good note
     matches its machine group exactly, so it's restored unclaimed)."""
     ingest(cfg)
     good_note = next((cfg.vault_dir / "models").glob("*.md"))
