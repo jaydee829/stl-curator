@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from pathlib import Path
 
@@ -71,7 +72,45 @@ def slugify(text: str) -> str:
 
 
 def note_path(vault_dir: Path, creator: str, title: str) -> Path:
-    return vault_dir / "models" / f"{slugify(creator)}--{slugify(title)}.md"
+    creator_slug = slugify(creator)
+    title_slug = slugify(title)
+
+    # Handle unicode-only titles that produce empty slugs
+    if not title_slug:
+        hash_suffix = "u" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
+        title_slug = hash_suffix
+
+    return vault_dir / "models" / f"{creator_slug}--{title_slug}.md"
+
+
+def resolve_note_path(vault_dir: Path, creator: str, title: str, group_id: str) -> Path:
+    """Resolve note path, handling collisions with different groups.
+
+    Returns the canonical path for a model group's note. If a note file exists
+    with a different group id, returns a disambiguated path with the group_id appended.
+    If the disambiguated path also exists with yet another group id, still returns it
+    (ids are content-derived, so collisions indicate the same group).
+    """
+    base_path = note_path(vault_dir, creator, title)
+
+    # If file doesn't exist or has matching id, use base path
+    if not base_path.exists():
+        return base_path
+
+    existing_note = frontmatter.load(base_path)
+    existing_id = existing_note.metadata.get("id")
+
+    # If existing note has the same id, it's our file
+    if existing_id == group_id:
+        return base_path
+
+    # Collision: return disambiguated path with group_id
+    creator_slug = slugify(creator)
+    title_slug = slugify(title)
+    if not title_slug:
+        title_slug = "u" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
+
+    return vault_dir / "models" / f"{creator_slug}--{title_slug}--{group_id}.md"
 
 
 def infer_creator_campaign(rel_path: str) -> tuple[str, str | None]:
@@ -177,7 +216,17 @@ TABLE thumb, status FROM "models" WHERE campaign = [[{name}]]
 """
 
 
-def ensure_entity_note(vault_dir: Path, kind: str, name: str) -> bool:
+def ensure_entity_note(vault_dir: Path, kind: str, name: str, creator: str | None = None) -> bool:
+    """Create entity note (creator or campaign) if not present.
+
+    For campaigns, creator must be provided and is used for the frontmatter wikilink.
+    Raises ValueError if kind=="campaigns" and creator is None.
+
+    Returns True if created, False if already exists.
+    """
+    if kind == "campaigns" and creator is None:
+        raise ValueError("creator must be provided for campaign entity notes")
+
     path = vault_dir / kind / f"{name}.md"
     if path.exists():
         return False
@@ -185,7 +234,7 @@ def ensure_entity_note(vault_dir: Path, kind: str, name: str) -> bool:
     body = _CREATOR_BODY if kind == "creators" else _CAMPAIGN_BODY
     meta = {"type": "creator" if kind == "creators" else "campaign"}
     if kind == "campaigns":
-        meta["creator"] = f"[[{name.split(' ')[0]}]]"
+        meta["creator"] = f"[[{creator}]]"
     note = frontmatter.Post(body.format(name=name), **meta)
     with open(path, "w", encoding="utf-8") as f:
         frontmatter.dump(note, f)

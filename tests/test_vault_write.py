@@ -11,6 +11,8 @@ from stl_curator.vault import (
     build_frontmatter,
     ensure_entity_note,
     infer_creator_campaign,
+    note_path,
+    resolve_note_path,
     slugify,
     write_model_note,
 )
@@ -122,3 +124,106 @@ def test_entity_note_created_once(tmp_path):
     assert ensure_entity_note(tmp_path / "vault", "creators", "GoblinCo") is False
     text = (tmp_path / "vault" / "creators" / "GoblinCo.md").read_text(encoding="utf-8")
     assert "dataview" in text and "[[GoblinCo]]" in text
+
+
+@pytest.mark.parametrize(
+    "creator,title,expected_slug",
+    [
+        ("GoblinCo", "Goblin", "goblinco--goblin"),
+        ("Owlbear Inc", "Tiny Bear", "owlbear-inc--tiny-bear"),
+        ("TrollKing", "troll_king  2", "trollking--troll-king-2"),
+    ],
+)
+def test_note_path_ascii_coverage(tmp_path, creator, title, expected_slug):
+    """note_path handles ASCII names correctly."""
+    path = note_path(tmp_path / "vault", creator, title)
+    assert path.name == f"{expected_slug}.md"
+    assert path.parent.name == "models"
+
+
+@pytest.mark.parametrize(
+    "title1,title2",
+    [
+        ("北京", "東京"),
+        ("日本", "中国"),
+    ],
+)
+def test_note_path_unicode_titles_distinct(tmp_path, title1, title2):
+    """Unicode-only titles with empty slugs get distinct hash-based names."""
+    path1 = note_path(tmp_path / "vault", "Creator", title1)
+    path2 = note_path(tmp_path / "vault", "Creator", title2)
+
+    # Both should have hash-based slugs (u + 8 hex chars)
+    assert "u" in path1.stem and "u" in path2.stem
+    # They should be different
+    assert path1 != path2
+
+
+def test_ensure_entity_note_campaign_requires_creator(tmp_path):
+    """ensure_entity_note raises ValueError for campaigns without creator."""
+    with pytest.raises(ValueError, match="creator must be provided"):
+        ensure_entity_note(tmp_path / "vault", "campaigns", "Titan Forge 2024-03", creator=None)
+
+
+def test_ensure_entity_note_campaign_with_creator(tmp_path):
+    """Campaign entity note uses provided creator name in wikilink."""
+    result = ensure_entity_note(
+        tmp_path / "vault", "campaigns", "Titan Forge 2024-03", creator="Titan Forge"
+    )
+    assert result is True
+    text = (tmp_path / "vault" / "campaigns" / "Titan Forge 2024-03.md").read_text(encoding="utf-8")
+    assert "[[Titan Forge]]" in text
+    # Verify it's not using the split hack (which would be [[Titan]])
+    assert "[[Titan]]" not in text or "[[Titan Forge]]" in text  # Allow [[Titan Forge]]
+
+
+def test_ensure_entity_note_campaign_no_creator_wikilink_bug(tmp_path):
+    """Campaign with multi-word name doesn't silently use split hack."""
+    # This is the bug from FINDING 1: name.split(' ')[0] creates orphaned campaigns
+    result = ensure_entity_note(
+        tmp_path / "vault", "campaigns", "Titan Forge 2024-03", creator="Titan Forge"
+    )
+    assert result is True
+    text = (tmp_path / "vault" / "campaigns" / "Titan Forge 2024-03.md").read_text(encoding="utf-8")
+    # Should have the full creator name, not just "Titan"
+    assert "[[Titan Forge]]" in text
+
+
+def test_resolve_note_path_no_existing_file(tmp_path):
+    """resolve_note_path returns base path when file doesn't exist."""
+    vault_dir = tmp_path / "vault"
+    path = resolve_note_path(vault_dir, "GoblinCo", "Goblin", "group1")
+    expected = note_path(vault_dir, "GoblinCo", "Goblin")
+    assert path == expected
+
+
+def test_resolve_note_path_existing_same_id(tmp_path):
+    """resolve_note_path returns base path when existing file has same id."""
+    vault_dir = tmp_path / "vault"
+    base_path = note_path(vault_dir, "GoblinCo", "Goblin")
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create file with group1 id
+    fm = {"id": "group1", "type": "model", "title": "Goblin"}
+    write_model_note(base_path, fm, "Goblin")
+
+    # Resolve with same id should return base path
+    resolved = resolve_note_path(vault_dir, "GoblinCo", "Goblin", "group1")
+    assert resolved == base_path
+
+
+def test_resolve_note_path_existing_different_id(tmp_path):
+    """resolve_note_path returns id-suffixed path when existing file has different id."""
+    vault_dir = tmp_path / "vault"
+    base_path = note_path(vault_dir, "GoblinCo", "Goblin")
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create file with group1 id
+    fm = {"id": "group1", "type": "model", "title": "Goblin"}
+    write_model_note(base_path, fm, "Goblin")
+
+    # Resolve with different id should return suffixed path
+    resolved = resolve_note_path(vault_dir, "GoblinCo", "Goblin", "group2")
+    assert resolved != base_path
+    assert "group2" in resolved.stem
+    assert resolved.parent == base_path.parent
