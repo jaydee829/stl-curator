@@ -227,3 +227,55 @@ def test_resolve_note_path_existing_different_id(tmp_path):
     assert resolved != base_path
     assert "group2" in resolved.stem
     assert resolved.parent == base_path.parent
+
+
+@pytest.mark.parametrize(
+    "creator1,creator2,title",
+    [
+        ("北京", "東京", "Goblin"),
+        ("日本", "中国", "Model"),
+    ],
+)
+def test_note_path_unicode_creators_distinct(tmp_path, creator1, creator2, title):
+    """Unicode-only creators with same title produce distinct paths."""
+    path1 = note_path(tmp_path / "vault", creator1, title)
+    path2 = note_path(tmp_path / "vault", creator2, title)
+
+    # Both should have hash-based creator slugs
+    assert path1.stem != path2.stem
+    assert path1 != path2
+    # Both should contain hash prefix "u"
+    assert "u" in path1.stem
+    assert "u" in path2.stem
+
+
+def test_note_path_unicode_hash_computation(tmp_path):
+    """Verify hash computation for unicode text is deterministic and distinct."""
+    import hashlib
+
+    # Compute expected hash for 北京
+    expected_hash = "u" + hashlib.sha256("北京".encode()).hexdigest()[:8]
+    path = note_path(tmp_path / "vault", "北京", "Goblin")
+
+    # Path should contain the hash
+    assert expected_hash in path.stem
+    assert path.name == f"{expected_hash}--goblin.md"
+
+
+def test_resolve_note_path_malformed_yaml_no_crash(tmp_path):
+    """resolve_note_path handles malformed YAML gracefully without raising."""
+    vault_dir = tmp_path / "vault"
+    base_path = note_path(vault_dir, "GoblinCo", "Goblin")
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write a malformed note with unterminated YAML list
+    malformed_content = "---\nid: [unterminated\n---\nBody content here.\n"
+    base_path.write_text(malformed_content, encoding="utf-8")
+
+    # resolve_note_path should not crash; should return id-suffixed path
+    # (treating malformed file as collision)
+    resolved = resolve_note_path(vault_dir, "GoblinCo", "Goblin", "group1")
+
+    # Should return disambiguated path, not raise
+    assert resolved != base_path
+    assert "group1" in resolved.stem

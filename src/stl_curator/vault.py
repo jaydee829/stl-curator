@@ -71,15 +71,25 @@ def slugify(text: str) -> str:
     return re.sub(r"-{2,}", "-", s).strip("-")
 
 
+def _slug_or_hash(text: str) -> str:
+    """Convert text to slug; if empty, use hash fallback for unicode-only text.
+
+    Returns slugified text or "u" + first 8 hex digits of SHA256(utf-8 encoded text).
+    """
+    slug = slugify(text)
+    if slug:
+        return slug
+    return "u" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
 def note_path(vault_dir: Path, creator: str, title: str) -> Path:
-    creator_slug = slugify(creator)
-    title_slug = slugify(title)
+    """Compute canonical path for a model note.
 
-    # Handle unicode-only titles that produce empty slugs
-    if not title_slug:
-        hash_suffix = "u" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
-        title_slug = hash_suffix
-
+    Handles unicode-only names by using hash fallback for empty slugs,
+    preventing collisions when creator or title contains only non-ASCII characters.
+    """
+    creator_slug = _slug_or_hash(creator)
+    title_slug = _slug_or_hash(title)
     return vault_dir / "models" / f"{creator_slug}--{title_slug}.md"
 
 
@@ -90,25 +100,31 @@ def resolve_note_path(vault_dir: Path, creator: str, title: str, group_id: str) 
     with a different group id, returns a disambiguated path with the group_id appended.
     If the disambiguated path also exists with yet another group id, still returns it
     (ids are content-derived, so collisions indicate the same group).
+
+    Malformed frontmatter in an existing note is treated as a collision (id treated as
+    UNKNOWN), and the id-suffixed path is returned without raising an exception.
     """
     base_path = note_path(vault_dir, creator, title)
 
-    # If file doesn't exist or has matching id, use base path
+    # If file doesn't exist, use base path
     if not base_path.exists():
         return base_path
 
-    existing_note = frontmatter.load(base_path)
-    existing_id = existing_note.metadata.get("id")
+    # Load existing note, treating malformed YAML as a collision
+    try:
+        existing_note = frontmatter.load(base_path)
+        existing_id = existing_note.metadata.get("id")
+    except Exception:  # noqa: BLE001
+        # Malformed frontmatter: treat as collision, never merge into unreadable note
+        existing_id = None
 
     # If existing note has the same id, it's our file
     if existing_id == group_id:
         return base_path
 
-    # Collision: return disambiguated path with group_id
-    creator_slug = slugify(creator)
-    title_slug = slugify(title)
-    if not title_slug:
-        title_slug = "u" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:8]
+    # Collision (different id or malformed): return disambiguated path with group_id
+    creator_slug = _slug_or_hash(creator)
+    title_slug = _slug_or_hash(title)
 
     return vault_dir / "models" / f"{creator_slug}--{title_slug}--{group_id}.md"
 
