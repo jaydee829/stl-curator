@@ -1,0 +1,20 @@
+# Binaries and generated caches never enter git (founding decision 1)
+example_stls/*
+!example_stls/.gitkeep
+thumbs/
+footprints/
+*.db
+*.sqlite3
+
+# Local configuration and secrets
+config.toml
+mmf_library.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
