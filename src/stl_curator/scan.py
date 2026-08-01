@@ -28,17 +28,28 @@ def hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _strip_long_path_prefix(p: Path) -> Path:
+    """Remove Windows long-path prefix if present."""
+    s = str(p)
+    if s.startswith("\\\\?\\"):
+        return Path(s[4:])
+    return p
+
+
 def scan_store(root: Path) -> list[FileRecord]:
     records = []
-    for p in root.rglob("*"):
+    scan_root = Path(long_path(root))
+    for p in scan_root.rglob("*"):
         if not p.is_file() or p.name.startswith("."):
             continue
         stat = p.stat()
+        # Strip prefix from enumerated path before hashing and storing
+        abs_path = _strip_long_path_prefix(p)
         records.append(
             FileRecord(
-                rel_path=p.relative_to(root).as_posix(),
-                abs_path=p,
-                hash=hash_file(p),
+                rel_path=p.relative_to(scan_root).as_posix(),
+                abs_path=abs_path,
+                hash=hash_file(abs_path),
                 size=stat.st_size,
                 mtime=stat.st_mtime,
                 kind=_KIND_BY_EXT.get(p.suffix.lower(), "other"),

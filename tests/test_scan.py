@@ -48,3 +48,30 @@ def test_kind_classification(store, rel, kind):
 
 def test_hidden_files_skipped(store):
     assert not any(".hidden" in r.rel_path for r in scan_store(store))
+
+
+def test_scan_handles_long_paths(tmp_path):
+    """Verify scan_store works on paths exceeding Windows MAX_PATH (260 chars)."""
+    import os
+
+    from stl_curator.config import long_path
+
+    # Build nested dirs to exceed 260 char limit
+    # Each segment is ~30 chars, so ~9 levels gets us past 260
+    path = tmp_path
+    for i in range(9):
+        path = path / f"deep_dir_{i:02d}_segment"
+
+    # Use os.makedirs with long_path prefix to create deep nested structure
+    os.makedirs(long_path(path), exist_ok=True)
+
+    test_file = path / "deep_file.stl"
+    # Use long_path for file write to handle paths longer than 260 chars
+    with open(long_path(test_file), "wb") as f:
+        f.write(b"test content")
+
+    # This should not raise OSError due to path length
+    recs = scan_store(tmp_path)
+    assert len(recs) == 1
+    assert recs[0].hash == hashlib.sha256(b"test content").hexdigest()
+    assert "deep_file.stl" in recs[0].rel_path
