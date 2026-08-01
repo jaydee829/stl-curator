@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
+from itertools import combinations
 from pathlib import Path
+
+from rapidfuzz import fuzz
+
+from stl_curator.config import Config
+from stl_curator.scan import FileRecord
 
 _SCALE_RE = re.compile(r"^(\d+mm|x\d+(\.\d+)?)$")
 _POSE_RE = re.compile(r"^poses?\d*$|^pos\d+$")
@@ -84,3 +91,85 @@ def normalize_stem(filename: str, vocab: Vocab) -> NormalizedName:
     core = "_".join(tokens) if tokens else stem.replace(" ", "_")
     role = "part" if saw_part else ("variant" if saw_variant else "model")
     return NormalizedName(core=core, role=role, markers=markers)
+
+
+@dataclass
+class GroupMember:
+    record: FileRecord
+    role: str
+
+
+@dataclass
+class ModelGroup:
+    members: list[GroupMember]
+    title: str
+    assembly: str
+    confidence: float
+
+    @property
+    def id(self) -> str:
+        return group_id([m.record.hash for m in self.members])
+
+
+def group_id(hashes: list[str]) -> str:
+    joined = "\n".join(sorted(hashes))
+    return hashlib.sha256(joined.encode()).hexdigest()[:8]
+
+
+def _assembly(members: list[GroupMember]) -> str:
+    if len(members) == 1:
+        return "single"
+    roles = {m.role for m in members}
+    if "part" in roles and "variant" in roles:
+        return "mixed"
+    if "part" in roles:
+        return "multipart"
+    if "variant" in roles:
+        return "variants"
+    return "needs-review"  # several files, no evidence they relate
+
+
+def group_folder(stl_records: list[FileRecord], vocab: Vocab, cfg: Config) -> list[ModelGroup]:
+    if not stl_records:
+        return []
+    normalized = [(r, normalize_stem(Path(r.rel_path).name, vocab)) for r in stl_records]
+    buckets: dict[str, list[tuple[FileRecord, NormalizedName]]] = {}
+    for r, n in normalized:
+        buckets.setdefault(n.core, []).append((r, n))
+
+    cores = sorted(buckets)
+    merged: list[list[str]] = []
+    for core in cores:
+        placed = False
+        for cluster in merged:
+            if any(fuzz.token_set_ratio(core, c) >= cfg.group_similarity for c in cluster):
+                cluster.append(core)
+                placed = True
+                break
+        if not placed:
+            merged.append([core])
+
+    groups: list[ModelGroup] = []
+    for cluster in merged:
+        pairs = [(a, b) for a, b in combinations(cluster, 2)]
+        conf = (
+            (sum(fuzz.token_set_ratio(a, b) for a, b in pairs) / len(pairs) / 100) if pairs else 1.0
+        )
+        members = [GroupMember(r, n.role) for c in cluster for (r, n) in buckets[c]]
+        members.sort(key=lambda m: m.record.rel_path)
+        title = max(cluster, key=len).replace("_", " ").title()
+        groups.append(ModelGroup(members, title, _assembly(members), conf))
+
+    if any(g.confidence < cfg.group_confidence_min for g in groups):
+        all_members = [GroupMember(r, n.role) for r, n in normalized]
+        all_members.sort(key=lambda m: m.record.rel_path)
+        folder = Path(stl_records[0].rel_path).parent.name or "Ungrouped"
+        return [
+            ModelGroup(
+                all_members,
+                folder.replace("_", " ").title(),
+                "needs-review",
+                min(g.confidence for g in groups),
+            )
+        ]
+    return sorted(groups, key=lambda g: g.title)
