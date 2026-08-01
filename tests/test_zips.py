@@ -1,6 +1,7 @@
 import zipfile
 from pathlib import Path
 
+from stl_curator.config import long_path
 from stl_curator.scan import scan_store
 from stl_curator.zips import extract_needed_zips
 
@@ -112,12 +113,11 @@ def test_cleans_partial_extraction_uses_long_path(tmp_path, monkeypatch):
     assert res.extracted == []
     assert res.errors and res.errors[0][0] == "C/kit.zip"
 
-    # Verify rmtree was called with the prefixed (long_path) target
+    # Verify rmtree was called with exactly what long_path yields for the target
+    # (\\?\-prefixed on Windows, plain on POSIX — the contract, not the prefix)
     assert len(rmtree_calls) == 1, f"Expected 1 rmtree call, got {len(rmtree_calls)}"
     called_path, called_ignore = rmtree_calls[0]
-    # rmtree should be called with long_path(target), which has \\?\ prefix
-    assert called_path.startswith("\\\\?\\"), (
-        f"rmtree should be called with long_path prefix, got {called_path}"
+    assert called_path == long_path(tmp_path / "C" / "kit"), (
+        f"rmtree should be called with long_path(target), got {called_path}"
     )
-    assert "kit" in called_path, f"rmtree path should contain target name, got {called_path}"
     assert called_ignore is True, "ignore_errors should be True"
