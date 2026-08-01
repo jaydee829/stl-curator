@@ -246,9 +246,16 @@ M1 empirical findings (task-15 report):
 - *Creator*: object `designer` is authoritative. One confirmed match inside
   a fused folder like "Archvillain Games - Tome of Demons Volume 1" fixes
   the creator entity; the folder-name residue is the campaign.
-- *Campaign*: the library/ownership index is purchase-granular, and an MMF
-  purchase IS the release bundle — campaigns come from the index with MMF's
-  own naming.
+- *Campaign*: the library/ownership index is purchase-granular, but a
+  purchase is NOT necessarily a release bundle — individual models are
+  purchasable too. Only bundle-shaped purchases (many distinct model names
+  in the object's file listing) become campaign entities; single-model
+  purchases yield a model note with creator but no campaign. Where no MMF
+  match exists, the local proxy is folder name-coherence: children whose
+  names share branding/prefix tokens ("Tome of Demons …") indicate a
+  release; a folder of unrelated names (an "MMF downloads" dump) is a
+  container, not a campaign, and its children match independently. When
+  the two signals disagree, MMF wins (oracle precedence).
 - *Model/grouping*: `/objects/{id}/files` listings are authoritative merge
   evidence — files listed under one object belong in one note (repairs the
   `STL_`-prefix supported/unsupported split without vocab tuning), and
