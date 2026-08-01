@@ -1,0 +1,8 @@
+store_root = "C:/dev/STL_curator/example_stls"
+vault_dir = "C:/dev/STL_curator/vault"
+thumbs_dir = "C:/dev/STL_curator/thumbs"
+footprints_dir = "C:/dev/STL_curator/footprints"
+cache_db = "C:/dev/STL_curator/cache.db"
+group_max_simple = 6
+group_similarity = 80
+group_confidence_min = 0.6

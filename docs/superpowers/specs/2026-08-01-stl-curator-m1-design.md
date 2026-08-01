@@ -239,6 +239,34 @@ auto-confirm owned hits, review queue otherwise) → MMF name becomes note
 taxonomy → `/objects/{id}/files` diff for completeness. File renaming on
 disk remains deferred beyond M2.
 
+**MMF as structure oracle (added 2026-08-01 after the M1 real-data run).**
+MMF data disambiguates all three hierarchy levels, directly addressing the
+M1 empirical findings (task-15 report):
+
+- *Creator*: object `designer` is authoritative. One confirmed match inside
+  a fused folder like "Archvillain Games - Tome of Demons Volume 1" fixes
+  the creator entity; the folder-name residue is the campaign.
+- *Campaign*: the library/ownership index is purchase-granular, but a
+  purchase is NOT necessarily a release bundle — individual models are
+  purchasable too. Only bundle-shaped purchases (many distinct model names
+  in the object's file listing) become campaign entities; single-model
+  purchases yield a model note with creator but no campaign. Where no MMF
+  match exists, the local proxy is folder name-coherence: children whose
+  names share branding/prefix tokens ("Tome of Demons …") indicate a
+  release; a folder of unrelated names (an "MMF downloads" dump) is a
+  container, not a campaign, and its children match independently. When
+  the two signals disagree, MMF wins (oracle precedence).
+- *Model/grouping*: `/objects/{id}/files` listings are authoritative merge
+  evidence — files listed under one object belong in one note (repairs the
+  `STL_`-prefix supported/unsupported split without vocab tuning), and
+  object granularity answers kit-vs-model.
+
+Precedence: filename/folder heuristics remain the offline first pass and
+the only path for unmatched (non-MMF) content; MMF-confirmed structure
+overrides heuristic guesses but never human corrections (merge rule
+unchanged). MMF object images additionally join the thumbnail harvest
+chain (priority 2, per seed doc).
+
 ## 9. Resolved / Deferred Questions
 
 - Kit granularity: heuristic grouping with roles (resolved; tuning empirical).
