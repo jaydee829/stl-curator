@@ -176,30 +176,33 @@ def rebuild_cache(cfg: Config) -> int:
         cfg: Configuration containing store_root, vault_dir, and cache_db paths
 
     Returns:
-        Count of notes restored from vault
+        Count of notes restored from vault (skipped notes on error not counted)
     """
     cache = Cache(cfg.cache_db)
-    cache.clear()
-    for rec in scan_store(cfg.store_root):
-        cache.upsert_file(rec)
-    restored = 0
-    models_dir = cfg.vault_dir / "models"
-    if models_dir.exists():
-        for note_file in sorted(models_dir.glob("*.md")):
-            try:
-                post = frontmatter.load(note_file)
-                fm = post.metadata
-            except (OSError, ValueError, KeyError):
-                # Corrupt or unparseable note; skip it but continue processing others
-                continue
-            files = fm.get("files") or []
-            if fm.get("id") and files:
-                cache.upsert_group(
-                    fm["id"],
-                    [f["hash"] for f in files],
-                    fm.get("group_confidence", 1.0),
-                    human_claimed=True,
-                )
-                restored += 1
-    cache.close()
-    return restored
+    try:
+        cache.clear()
+        for rec in scan_store(cfg.store_root):
+            cache.upsert_file(rec)
+        restored = 0
+        models_dir = cfg.vault_dir / "models"
+        if models_dir.exists():
+            for note_file in sorted(models_dir.glob("*.md")):
+                try:
+                    post = frontmatter.load(note_file)
+                    fm = post.metadata
+                    files = fm.get("files") or []
+                    if fm.get("id") and files:
+                        cache.upsert_group(
+                            fm["id"],
+                            [f["hash"] for f in files],
+                            fm.get("group_confidence", 1.0),
+                            human_claimed=True,
+                        )
+                        restored += 1
+                except Exception:  # noqa: BLE001, S112
+                    # Corrupt or unparseable note; skip it but continue processing others
+                    # Covers: YAML parsing errors, missing fields, file read errors
+                    continue
+        return restored
+    finally:
+        cache.close()

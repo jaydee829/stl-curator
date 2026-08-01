@@ -34,7 +34,7 @@ def ingest(
 
 
 @app.command("rebuild-cache")
-def rebuild(config: Path = typer.Option(Path("config.toml"), "--config")):  # noqa: B008
+def rebuild(config: Path = typer.Option(Path("config.toml"), "--config")) -> None:  # noqa: B008
     cfg = load_config(config)
     n = rebuild_cache_fn(cfg)
     typer.echo(f"restored {n} groups from vault")
