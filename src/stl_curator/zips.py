@@ -23,16 +23,14 @@ def extract_needed_zips(records: list[FileRecord], root: Path) -> ExtractResult:
         target = rec.abs_path.with_suffix("")
         if target.exists():
             continue
-        target_existed = False
         try:
-            target_existed = target.exists()
             # Use long_path for both opening and extracting to handle Windows MAX_PATH
             with zipfile.ZipFile(long_path(rec.abs_path)) as z:
                 z.extractall(long_path(target))
             res.extracted.append(target)
         except (zipfile.BadZipFile, OSError) as e:
-            # Clean up partial extraction if this run created the target dir
-            if target.exists() and not target_existed:
-                shutil.rmtree(target, ignore_errors=True)
+            # Clean up partial extraction (use long_path for cleanup to match extractall)
+            if target.exists():
+                shutil.rmtree(long_path(target), ignore_errors=True)
             res.errors.append((rec.rel_path, str(e)))
     return res
