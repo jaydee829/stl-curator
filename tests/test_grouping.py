@@ -103,17 +103,21 @@ def test_assembly_both_models_needs_review():
 def test_coarse_collapse_low_confidence():
     """
     When any group's confidence falls below group_confidence_min, the entire
-    folder collapses to a single 'needs-review' group.
+    folder collapses to a single 'needs-review' group, including all other groups.
 
-    Three cores that chain-merge:
-    - goblin vs goblins: 92.31
-    - goblin vs goblins_v2: 75.00 (below 80, but goblins merges with both)
-    - goblins vs goblins_v2: 82.35
-    Cluster: [goblin, goblins, goblins_v2] via merge chain
-    Mean pairwise: (92.31 + 75.00 + 82.35) / 3 = 83.22, conf = 0.832
+    Forms TWO clusters under ordinary clustering:
+    - Cluster A (singleton): troll_king (confidence 1.0, >= threshold)
+    - Cluster B (chain-merge): goblin, goblins, goblins_v2
+      - goblin vs goblins: 92.31
+      - goblin vs goblins_v2: 75.00 (below 80, but goblins merges with both)
+      - goblins vs goblins_v2: 82.35
+      - Mean pairwise: (92.31 + 75.00 + 82.35) / 3 = 83.22, conf = 0.832
 
-    With group_confidence_min=0.85, conf (0.832) < 0.85 triggers coarse-collapse.
-    Result: single group with all files, assembly='needs-review'.
+    With group_confidence_min=0.85: Cluster B (0.832 < 0.85) triggers collapse.
+    The gate collapses the ENTIRE FOLDER into ONE group with all 4 files.
+
+    Without the gate: would return 2 separate groups (troll_king + goblin cluster).
+    This test discriminates: it MUST fail if the collapse gate is disabled.
     """
     cfg_high_threshold = Config(
         store_root=Path("."),
@@ -124,11 +128,14 @@ def test_coarse_collapse_low_confidence():
         group_confidence_min=0.85,
     )
     groups = group_folder(
-        recs("goblin.stl", "goblins.stl", "goblins_v2.stl"), VOCAB, cfg_high_threshold
+        recs("troll_king.stl", "goblin.stl", "goblins.stl", "goblins_v2.stl"),
+        VOCAB,
+        cfg_high_threshold,
     )
     assert len(groups) == 1
     assert groups[0].assembly == "needs-review"
-    assert len(groups[0].members) == 3
+    assert len(groups[0].members) == 4
+    assert groups[0].confidence == pytest.approx(0.832, abs=0.01)
 
 
 def test_ungrouped_fallback_title():
