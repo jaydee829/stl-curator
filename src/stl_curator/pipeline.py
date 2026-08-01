@@ -160,7 +160,7 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
         group_hashes = {m.record.hash for m in group.members}
         prior_hashes = cache.group_members(group.id)
         npath = resolve_note_path(
-            cfg.vault_dir, creator, group.title, group.id, frozenset(group_hashes)
+            cfg.vault_dir, creator, group.title, group.id, frozenset(group_hashes), folder
         )
         if dry_run:
             result = plan_model_note(npath, fm, prior_hashes)
@@ -170,6 +170,19 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
             cache.upsert_group(
                 group.id, sorted(final_hashes), group.confidence, human_claimed=human_claimed
             )
+            if human_claimed:
+                # A hash the group generated but the note no longer carries
+                # was removed (or relocated elsewhere) by a human. Tombstone
+                # it as its own permanently-claimed row so claimed_hashes()
+                # excludes it from every future regrouping — otherwise it
+                # would resurface as its own fragment note one ingest later,
+                # since it's still physically on disk but isn't a member of
+                # any human_claimed group.
+                removed = group_hashes - final_hashes
+                if removed:
+                    cache.upsert_group(
+                        f"{group.id}-removed", sorted(removed), 1.0, human_claimed=True
+                    )
             ensure_entity_note(cfg.vault_dir, "creators", creator)
             if campaign:
                 ensure_entity_note(
@@ -204,6 +217,15 @@ def rebuild_cache(cfg: Config) -> int:
     grouping at all (e.g. the group was hand-edited into something the machine
     would never produce) is, by definition, human-diverged and claimed=True.
 
+    Removal tombstones (see ingest's `"{group.id}-removed"` rows) are not
+    persisted anywhere except the cache, so cache loss would otherwise let a
+    removed file resurface as its own fragment note. Rebuild re-derives them
+    from disk + vault alone: for each machine group with a matching note, any
+    hash the machine generated for it that the note doesn't carry AND that
+    doesn't appear in ANY vault note (i.e. wasn't relocated into a different,
+    already-divergent note) was removed by a human — tombstone it the same
+    way ingest does.
+
     Args:
         cfg: Configuration containing store_root, vault_dir, and cache_db paths
 
@@ -220,7 +242,8 @@ def rebuild_cache(cfg: Config) -> int:
         machine_hashes_by_id = {
             g.id: {m.record.hash for m in g.members} for g in _compute_groups(records, vocab, cfg)
         }
-        restored = 0
+
+        parsed_notes: list[tuple[str, set[str], float]] = []
         models_dir = cfg.vault_dir / "models"
         if models_dir.exists():
             for note_file in sorted(models_dir.glob("*.md")):
@@ -230,19 +253,36 @@ def rebuild_cache(cfg: Config) -> int:
                     files = fm.get("files") or []
                     if fm.get("id") and files:
                         note_hashes = {f["hash"] for f in files}
-                        machine_hashes = machine_hashes_by_id.get(fm["id"])
-                        human_claimed = machine_hashes is None or note_hashes != machine_hashes
-                        cache.upsert_group(
-                            fm["id"],
-                            [f["hash"] for f in files],
-                            fm.get("group_confidence", 1.0),
-                            human_claimed=human_claimed,
+                        parsed_notes.append(
+                            (fm["id"], note_hashes, fm.get("group_confidence", 1.0))
                         )
-                        restored += 1
                 except Exception:  # noqa: BLE001, S112
                     # Corrupt or unparseable note; skip it but continue processing others
                     # Covers: YAML parsing errors, missing fields, file read errors
                     continue
+
+        # A hash relocated by hand into a different note is already covered:
+        # that note's own membership diverges from ITS machine group, so it's
+        # restored human_claimed=True below and the hash is claimed via that
+        # row. Only a hash absent from every vault note was truly removed.
+        all_note_hashes: set[str] = set()
+        for _, note_hashes, _ in parsed_notes:
+            all_note_hashes |= note_hashes
+
+        restored = 0
+        for group_id, note_hashes, confidence in parsed_notes:
+            machine_hashes = machine_hashes_by_id.get(group_id)
+            human_claimed = machine_hashes is None or note_hashes != machine_hashes
+            cache.upsert_group(
+                group_id, sorted(note_hashes), confidence, human_claimed=human_claimed
+            )
+            restored += 1
+            if machine_hashes is not None:
+                removed = (machine_hashes - note_hashes) - all_note_hashes
+                if removed:
+                    cache.upsert_group(
+                        f"{group_id}-removed", sorted(removed), 1.0, human_claimed=True
+                    )
         return restored
     finally:
         cache.close()

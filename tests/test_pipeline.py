@@ -6,7 +6,7 @@ import trimesh
 
 from stl_curator.cache import Cache
 from stl_curator.config import Config
-from stl_curator.pipeline import ingest
+from stl_curator.pipeline import ingest, rebuild_cache
 
 
 @pytest.fixture
@@ -165,10 +165,16 @@ def test_third_ingest_leaves_claimed_note_untouched(two_pose_store):
         frontmatter.dump(post, f)
     ingest(two_pose_store)
 
-    before = note_path.read_bytes()
+    models_dir = two_pose_store.vault_dir / "models"
+    before_bytes = note_path.read_bytes()
+    before_names = {p.name for p in models_dir.glob("*.md")}
     ingest(two_pose_store)
 
-    assert note_path.read_bytes() == before
+    assert note_path.read_bytes() == before_bytes
+    # The models directory's file-set is what actually catches a fragment
+    # note appearing — byte-equality of the original note alone would miss a
+    # stray singleton note for the removed member showing up alongside it.
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
 
 
 def test_hash_moved_by_hand_to_another_note_stays_and_old_group_drops_it(two_pose_store):
@@ -205,3 +211,146 @@ def test_hash_moved_by_hand_to_another_note_stays_and_old_group_drops_it(two_pos
 
     goblin_after = frontmatter.load(goblin_note)
     assert moved_hash not in {f["hash"] for f in goblin_after.metadata["files"]}
+
+
+def test_relocated_hash_never_resurfaces_as_fragment(two_pose_store):
+    """FINDING B, test (a): a hash relocated by hand into a different note
+    must never resurface as its own fragment note, on this ingest or any
+    later one — the removal tombstone permanently excludes it from
+    regrouping. A third ingest (no further edits) is then a full no-op."""
+    ingest(two_pose_store)
+    goblin_note = _the_only_note(two_pose_store.vault_dir)
+    post = frontmatter.load(goblin_note)
+    moved_entry = dict(post.metadata["files"][1])
+
+    post.metadata["files"] = post.metadata["files"][:1]
+    with open(goblin_note, "w", encoding="utf-8") as f:
+        frontmatter.dump(post, f)
+
+    other_note = two_pose_store.vault_dir / "models" / "manual-other.md"
+    other_post = frontmatter.Post(
+        "# Other Model\n",
+        id="manual0",
+        type="model",
+        title="Other Model",
+        files=[moved_entry],
+    )
+    with open(other_note, "w", encoding="utf-8") as f:
+        frontmatter.dump(other_post, f)
+
+    models_dir = two_pose_store.vault_dir / "models"
+    before_names = {p.name for p in models_dir.glob("*.md")}
+
+    ingest(two_pose_store)  # divergence discovered; removal tombstone created
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+    ingest(two_pose_store)  # a fragment for the relocated hash would appear here
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+    s3 = ingest(two_pose_store)
+    assert (s3.created, s3.updated) == (0, 0)
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+
+def test_removed_hash_no_fragment_across_two_ingests(two_pose_store):
+    """FINDING B, test (b) part 1: a pure removal (no relocation elsewhere)
+    must not resurface as a fragment note across two consecutive ingests."""
+    ingest(two_pose_store)
+    note_path = _the_only_note(two_pose_store.vault_dir)
+    post = frontmatter.load(note_path)
+    post.metadata["files"] = post.metadata["files"][:1]
+    with open(note_path, "w", encoding="utf-8") as f:
+        frontmatter.dump(post, f)
+
+    models_dir = two_pose_store.vault_dir / "models"
+    before_names = {p.name for p in models_dir.glob("*.md")}
+
+    ingest(two_pose_store)
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+    ingest(two_pose_store)
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+
+def test_removed_hash_tombstone_survives_cache_rebuild(two_pose_store):
+    """FINDING B, test (b) part 2 — the founding constraint: "no state lives
+    only in SQLite". After cache loss + rebuild, the removal tombstone must
+    be RE-DERIVED from disk + vault alone, so the removed hash still doesn't
+    resurface as a fragment note post-rebuild."""
+    ingest(two_pose_store)
+    note_path = _the_only_note(two_pose_store.vault_dir)
+    post = frontmatter.load(note_path)
+    post.metadata["files"] = post.metadata["files"][:1]
+    with open(note_path, "w", encoding="utf-8") as f:
+        frontmatter.dump(post, f)
+
+    models_dir = two_pose_store.vault_dir / "models"
+    before_names = {p.name for p in models_dir.glob("*.md")}
+
+    ingest(two_pose_store)
+    ingest(two_pose_store)
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+    two_pose_store.cache_db.unlink()
+    rebuild_cache(two_pose_store)
+
+    ingest(two_pose_store)
+    assert {p.name for p in models_dir.glob("*.md")} == before_names
+
+
+def test_cross_folder_duplicate_content_does_not_hijack_note(tmp_path):
+    """FINDING A regression: two campaign folders under one creator share
+    one content-identical file plus distinct partners. A raw hash-overlap
+    note match (no folder check) would hijack the first folder's note,
+    collapsing all three files into one note and mis-claiming the mangled
+    union. The folder-scoped overlap rule must fall back to the
+    disambiguated-fork path instead (the pre-fix collision behavior, which
+    is correct for genuinely unrelated groups). This test fails without the
+    folder check.
+    """
+    root = tmp_path / "store"
+    (root / "Creator" / "2024-03").mkdir(parents=True)
+    (root / "Creator" / "2024-04").mkdir(parents=True)
+    trimesh.creation.box(extents=[5, 5, 30]).export(
+        root / "Creator" / "2024-03" / "goblin_pose1.stl"
+    )
+    trimesh.creation.box(extents=[5, 5, 31]).export(
+        root / "Creator" / "2024-03" / "goblin_pose2.stl"
+    )
+    # Content-identical duplicate of 2024-03's pose1, dropped into a
+    # different campaign folder alongside a distinct partner file.
+    (root / "Creator" / "2024-04" / "goblin_pose1.stl").write_bytes(
+        (root / "Creator" / "2024-03" / "goblin_pose1.stl").read_bytes()
+    )
+    trimesh.creation.box(extents=[5, 5, 32]).export(
+        root / "Creator" / "2024-04" / "goblin_pose3.stl"
+    )
+    cfg = Config(
+        store_root=root,
+        vault_dir=tmp_path / "vault",
+        thumbs_dir=tmp_path / "thumbs",
+        footprints_dir=tmp_path / "footprints",
+        cache_db=tmp_path / "cache.db",
+    )
+
+    ingest(cfg)
+
+    notes = list((cfg.vault_dir / "models").glob("*.md"))
+    assert len(notes) == 2
+
+    original_note = cfg.vault_dir / "models" / "creator--goblin.md"
+    assert original_note.exists()
+    original_meta = frontmatter.load(original_note).metadata
+    assert {f["path"] for f in original_meta["files"]} == {
+        "Creator/2024-03/goblin_pose1.stl",
+        "Creator/2024-03/goblin_pose2.stl",
+    }
+
+    cache = Cache(cfg.cache_db)
+    rows = cache.conn.execute("SELECT human_claimed FROM groups").fetchall()
+    cache.close()
+    assert rows
+    assert all(r["human_claimed"] == 0 for r in rows)
+
+    s2 = ingest(cfg)
+    assert (s2.created, s2.updated) == (0, 0)
+    assert s2.unchanged == 2

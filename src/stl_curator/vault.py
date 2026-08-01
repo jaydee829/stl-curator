@@ -131,6 +131,7 @@ def resolve_note_path(
     title: str,
     group_id: str,
     member_hashes: set[str] | frozenset[str] = frozenset(),
+    member_folder: str | None = None,
 ) -> Path:
     """Resolve note path, handling collisions with different groups.
 
@@ -144,10 +145,18 @@ def resolve_note_path(
     stability spec). A raw id mismatch alone can therefore mean either (a) an
     unrelated group that happens to share this creator/title, or (b) the same
     model that simply gained or lost a member since the note was last written.
-    `member_hashes`, when provided, disambiguates the two: any overlap with the
-    existing note's own files means it's the same evolving model, so the note
-    is reused (and its stale id refreshed via the machine-owned "id" field)
-    instead of forking a duplicate note.
+
+    `member_hashes`/`member_folder`, when both provided, disambiguate the two
+    — but a raw hash-overlap check alone is UNSOUND: two files can share
+    content (identical hash) while living in different, unrelated folders
+    (e.g. a duplicate asset re-used across two campaigns). Matching on that
+    alone would hijack an unrelated note. So the match requires every
+    overlapping existing entry's path to live in the SAME folder as the new
+    group's files (`member_folder`, a store-relative folder string) — that
+    is only true for a genuinely evolving model (same on-disk folder gaining
+    or losing a member), never for an unrelated group that merely shares a
+    duplicated file. When the check fails (no overlap, or an overlapping
+    entry lives elsewhere), it falls through to the disambiguated-fork path.
 
     Malformed frontmatter in an existing note is treated as a collision (id treated as
     UNKNOWN), and the id-suffixed path is returned without raising an exception.
@@ -162,22 +171,28 @@ def resolve_note_path(
     try:
         existing_note = frontmatter.load(base_path)
         existing_id = existing_note.metadata.get("id")
-        existing_hashes = {
-            f["hash"] for f in (existing_note.metadata.get("files") or []) if "hash" in f
-        }
+        existing_files = [
+            f for f in (existing_note.metadata.get("files") or []) if "hash" in f and "path" in f
+        ]
     except Exception:  # noqa: BLE001
         # Malformed frontmatter: treat as collision, never merge into unreadable note
         existing_id = None
-        existing_hashes = set()
+        existing_files = []
 
     # If existing note has the same id, it's our file
     if existing_id == group_id:
         return base_path
 
-    # Same evolving model (shares at least one member with the existing note),
-    # not an unrelated group that happens to collide on creator/title
-    if member_hashes and existing_hashes & member_hashes:
-        return base_path
+    # Same evolving model (every existing entry sharing a member hash with
+    # the new group also lives in the new group's own folder) — not an
+    # unrelated group that merely happens to collide on creator/title or
+    # share one duplicated file from a different folder.
+    if member_hashes and member_folder is not None:
+        overlap_entries = [f for f in existing_files if f["hash"] in member_hashes]
+        if overlap_entries and all(
+            str(Path(f["path"]).parent) == member_folder for f in overlap_entries
+        ):
+            return base_path
 
     # Collision (different id or malformed): return disambiguated path with group_id
     creator_slug = _slug_or_hash(creator)
