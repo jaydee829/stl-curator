@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -45,8 +46,27 @@ def test_overrides_beat_file(tmp_path):
 @pytest.mark.parametrize(
     "given,expected",
     [
-        (Path("C:/x/y.stl"), "\\\\?\\C:\\x\\y.stl"),
-        (Path("relative/y.stl"), str(Path("relative/y.stl"))),  # relative paths unwrapped
+        pytest.param(
+            Path("C:/x/y.stl"),
+            "\\\\?\\C:\\x\\y.stl",
+            marks=pytest.mark.skipif(
+                os.name != "nt", reason="Windows-only \\\\?\\ long-path prefix"
+            ),
+            id="windows_absolute_gets_prefix",
+        ),
+        pytest.param(
+            Path("relative/y.stl"),
+            str(Path("relative/y.stl")),
+            id="relative_path_never_prefixed",
+        ),
+        pytest.param(
+            Path("/x/y.stl"),
+            str(Path("/x/y.stl")),
+            marks=pytest.mark.skipif(
+                os.name == "nt", reason="POSIX absolute path must stay unprefixed"
+            ),
+            id="posix_absolute_not_prefixed",
+        ),
     ],
 )
 def test_long_path(given, expected):

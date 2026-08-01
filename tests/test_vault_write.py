@@ -98,8 +98,10 @@ def test_build_frontmatter_mesh_error_true(tmp_path):
 def test_write_then_rewrite_unchanged(tmp_path):
     p = tmp_path / "vault" / "models" / "n.md"
     fm = {"id": "g1", "type": "model", "title": "Goblin", "status": "unprinted"}
-    assert write_model_note(p, dict(fm), "Goblin") == "created"
-    assert write_model_note(p, dict(fm), "Goblin") == "unchanged"
+    status, _ = write_model_note(p, dict(fm), "Goblin")
+    assert status == "created"
+    status, _ = write_model_note(p, dict(fm), "Goblin")
+    assert status == "unchanged"
 
 
 def test_rewrite_preserves_body_and_human_fields(tmp_path):
@@ -110,10 +112,11 @@ def test_rewrite_preserves_body_and_human_fields(tmp_path):
     note.content += "\nMy campaign notes."
     with open(p, "w", encoding="utf-8") as f:
         frontmatter.dump(note, f)
-    result = write_model_note(
+    result, final_hashes = write_model_note(
         p, {"id": "g1", "type": "model", "status": "unprinted", "height_mm": 5.0}, "G"
     )
     assert result == "updated"
+    assert final_hashes == set()
     out = frontmatter.load(p)
     assert out["status"] == "painted"
     assert out["height_mm"] == 5.0

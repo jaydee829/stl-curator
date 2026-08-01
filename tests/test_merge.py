@@ -144,3 +144,57 @@ def test_merge_deep_copies_generated_when_existing_none():
     assert merged == generated
     assert merged is not generated
     assert merged["tags"] is not generated["tags"]
+
+
+# FINDING 1 (human group-membership removals must not be clobbered by re-ingest)
+def test_files_human_removal_dropped_via_prior_hashes():
+    """A generated entry whose hash was previously part of the group (per
+    prior_hashes) but is no longer in the note's existing files is a human
+    removal — it must not be silently re-added."""
+    existing = [{"path": "a.stl", "hash": "h1", "role": "model"}]
+    generated = [
+        {"path": "a.stl", "hash": "h1", "role": "model"},
+        {"path": "b.stl", "hash": "h2", "role": "part"},
+    ]
+    merged = merge_files_list(existing, generated, prior_hashes={"h1", "h2"})
+    assert {e["hash"] for e in merged} == {"h1"}
+
+
+def test_files_new_hash_not_in_prior_hashes_still_appended():
+    """A generated entry whose hash was never part of this group before is
+    genuinely new and must be appended, even with prior_hashes non-empty."""
+    existing = [{"path": "a.stl", "hash": "h1", "role": "model"}]
+    generated = [
+        {"path": "a.stl", "hash": "h1", "role": "model"},
+        {"path": "b.stl", "hash": "h2", "role": "part"},
+    ]
+    merged = merge_files_list(existing, generated, prior_hashes={"h1"})
+    assert {e["hash"] for e in merged} == {"h1", "h2"}
+
+
+def test_files_default_prior_hashes_preserves_old_behavior():
+    """Without prior_hashes (default empty frozenset), a new generated entry
+    with no existing match is always appended — matching pre-fix behavior
+    for stores with no human edits."""
+    existing = [{"path": "a.stl", "hash": "h1", "role": "model"}]
+    generated = [
+        {"path": "a.stl", "hash": "h1", "role": "model"},
+        {"path": "b.stl", "hash": "h2", "role": "part"},
+    ]
+    merged = merge_files_list(existing, generated)
+    assert {e["hash"] for e in merged} == {"h1", "h2"}
+
+
+def test_merge_frontmatter_threads_prior_hashes_to_files():
+    """merge_frontmatter forwards its prior_hashes param to merge_files_list
+    for the 'files' key."""
+    existing = dict(GEN, files=[{"path": "C/R/g1.stl", "hash": "h1", "role": "variant"}])
+    generated = dict(
+        GEN,
+        files=[
+            {"path": "C/R/g1.stl", "hash": "h1", "role": "variant"},
+            {"path": "C/R/g2.stl", "hash": "h2", "role": "variant"},
+        ],
+    )
+    merged = merge_frontmatter(existing, generated, prior_hashes={"h1", "h2"})
+    assert {f["hash"] for f in merged["files"]} == {"h1"}

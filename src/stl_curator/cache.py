@@ -68,6 +68,14 @@ class Cache:
         )
         self.conn.commit()
 
+    def group_members(self, group_id: str) -> set[str]:
+        row = self.conn.execute(
+            "SELECT member_hashes FROM groups WHERE group_id=?", (group_id,)
+        ).fetchone()
+        if row is None:
+            return set()
+        return set(json.loads(row["member_hashes"]))
+
     def claimed_hashes(self) -> set[str]:
         out: set[str] = set()
         for row in self.conn.execute("SELECT member_hashes FROM groups WHERE human_claimed=1"):

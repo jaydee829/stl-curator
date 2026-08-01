@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -33,7 +34,13 @@ def load_config(path: Path | None = None, **overrides) -> Config:
 
 
 def long_path(p: Path) -> str:
-    """Windows long-path-safe string for file I/O. Absolute paths get \\\\?\\."""
-    if p.is_absolute():
+    """Windows long-path-safe string for file I/O. Absolute paths get \\\\?\\.
+
+    The \\\\?\\ prefix is a Windows-only escape (it disables MAX_PATH and
+    normalization in the Win32 API). On POSIX, paths don't have this limit
+    and the literal backslash-prefixed string would corrupt the path, so the
+    prefix is only ever added when running on Windows (os.name == "nt").
+    """
+    if os.name == "nt" and p.is_absolute():
         return "\\\\?\\" + str(p)
     return str(p)

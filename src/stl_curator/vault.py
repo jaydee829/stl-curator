@@ -24,7 +24,7 @@ MACHINE_FIELDS = {
 HUMAN_FIELDS = {"status", "tags", "title", "creator", "campaign", "assembly", "source", "mmf_id"}
 
 
-def merge_files_list(existing, generated):
+def merge_files_list(existing, generated, prior_hashes: set[str] | frozenset[str] = frozenset()):
     """Merge existing (human-visible) file entries with freshly generated ones.
 
     Matches each existing entry to a generated entry preferring an exact path
@@ -32,6 +32,13 @@ def merge_files_list(existing, generated):
     is required so that two members sharing an identical content hash (e.g.
     duplicate files) each keep their own entry instead of both collapsing onto
     whichever generated entry the naive hash lookup found first.
+
+    `prior_hashes` is the group's previously-cached member hash set. A leftover
+    generated entry (one with no matching existing entry) whose hash is in
+    `prior_hashes` is a file the human explicitly removed from this note's
+    `files:` list on a prior run — it must NOT be silently re-added. A
+    leftover generated entry whose hash is NOT in `prior_hashes` is genuinely
+    new (never seen in this group before) and is appended as before.
     """
     existing = existing or []
     remaining = list(generated)
@@ -43,6 +50,7 @@ def merge_files_list(existing, generated):
         return None
 
     out = []
+    existing_hashes = {e["hash"] for e in existing}
     for e in existing:
         gen = _pop_match(lambda g, path=e["path"]: g["path"] == path)
         if gen is None:
@@ -55,17 +63,26 @@ def merge_files_list(existing, generated):
             if "footprint" in gen:
                 entry["footprint"] = gen["footprint"]
         out.append(entry)
-    out.extend(sorted((dict(g) for g in remaining), key=lambda g: g["path"]))
+    kept_new = [
+        dict(g)
+        for g in remaining
+        if not (g["hash"] in prior_hashes and g["hash"] not in existing_hashes)
+    ]
+    out.extend(sorted(kept_new, key=lambda g: g["path"]))
     return out
 
 
-def merge_frontmatter(existing: dict | None, generated: dict) -> dict:
+def merge_frontmatter(
+    existing: dict | None,
+    generated: dict,
+    prior_hashes: set[str] | frozenset[str] = frozenset(),
+) -> dict:
     if existing is None:
         return copy.deepcopy(generated)
     merged = copy.deepcopy(existing)  # deep copy to avoid aliasing nested mutables
     for k, v in generated.items():
         if k == "files":
-            merged["files"] = merge_files_list(existing.get("files"), v)
+            merged["files"] = merge_files_list(existing.get("files"), v, prior_hashes)
         elif k in MACHINE_FIELDS:
             merged[k] = v
         elif k in HUMAN_FIELDS:
@@ -108,13 +125,29 @@ def note_path(vault_dir: Path, creator: str, title: str) -> Path:
     return vault_dir / "models" / f"{creator_slug}--{title_slug}.md"
 
 
-def resolve_note_path(vault_dir: Path, creator: str, title: str, group_id: str) -> Path:
+def resolve_note_path(
+    vault_dir: Path,
+    creator: str,
+    title: str,
+    group_id: str,
+    member_hashes: set[str] | frozenset[str] = frozenset(),
+) -> Path:
     """Resolve note path, handling collisions with different groups.
 
     Returns the canonical path for a model group's note. If a note file exists
     with a different group id, returns a disambiguated path with the group_id appended.
     If the disambiguated path also exists with yet another group id, still returns it
     (ids are content-derived, so collisions indicate the same group).
+
+    `group_id` is a hash of the *current* member set, so it changes whenever a
+    file joins or leaves the folder cluster (by design — see group identity
+    stability spec). A raw id mismatch alone can therefore mean either (a) an
+    unrelated group that happens to share this creator/title, or (b) the same
+    model that simply gained or lost a member since the note was last written.
+    `member_hashes`, when provided, disambiguates the two: any overlap with the
+    existing note's own files means it's the same evolving model, so the note
+    is reused (and its stale id refreshed via the machine-owned "id" field)
+    instead of forking a duplicate note.
 
     Malformed frontmatter in an existing note is treated as a collision (id treated as
     UNKNOWN), and the id-suffixed path is returned without raising an exception.
@@ -129,12 +162,21 @@ def resolve_note_path(vault_dir: Path, creator: str, title: str, group_id: str) 
     try:
         existing_note = frontmatter.load(base_path)
         existing_id = existing_note.metadata.get("id")
+        existing_hashes = {
+            f["hash"] for f in (existing_note.metadata.get("files") or []) if "hash" in f
+        }
     except Exception:  # noqa: BLE001
         # Malformed frontmatter: treat as collision, never merge into unreadable note
         existing_id = None
+        existing_hashes = set()
 
     # If existing note has the same id, it's our file
     if existing_id == group_id:
+        return base_path
+
+    # Same evolving model (shares at least one member with the existing note),
+    # not an unrelated group that happens to collide on creator/title
+    if member_hashes and existing_hashes & member_hashes:
         return base_path
 
     # Collision (different id or malformed): return disambiguated path with group_id
@@ -204,17 +246,30 @@ def build_frontmatter(
     return fm
 
 
-def write_model_note(path: Path, generated_fm: dict, title: str) -> str:
+def write_model_note(
+    path: Path,
+    generated_fm: dict,
+    title: str,
+    prior_hashes: set[str] | frozenset[str] = frozenset(),
+) -> tuple[str, set[str]]:
+    """Write or update a model note, merging machine facts with human edits.
+
+    Returns (status, final_hashes) where status is "created" | "updated" |
+    "unchanged" and final_hashes is the resulting note's files hash set
+    (after merge) — the caller uses this to detect human divergence from the
+    freshly generated group membership.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         note = frontmatter.load(path)
-        merged = merge_frontmatter(dict(note.metadata), generated_fm)
+        merged = merge_frontmatter(dict(note.metadata), generated_fm, prior_hashes)
+        final_hashes = {f["hash"] for f in merged.get("files", [])}
         if merged == dict(note.metadata):
-            return "unchanged"
+            return "unchanged", final_hashes
         note.metadata = merged
         with open(path, "w", encoding="utf-8") as f:
             frontmatter.dump(note, f)
-        return "updated"
+        return "updated", final_hashes
     note = frontmatter.Post(
         f"# {title}\n\n> Auto-generated stub. Notes below this line are yours; "
         "the pipeline never touches body text.\n",
@@ -222,7 +277,8 @@ def write_model_note(path: Path, generated_fm: dict, title: str) -> str:
     )
     with open(path, "w", encoding="utf-8") as f:
         frontmatter.dump(note, f)
-    return "created"
+    final_hashes = {f["hash"] for f in generated_fm.get("files", [])}
+    return "created", final_hashes
 
 
 _CREATOR_BODY = """# {name}
@@ -272,7 +328,11 @@ def ensure_entity_note(vault_dir: Path, kind: str, name: str, creator: str | Non
     return True
 
 
-def plan_model_note(path: Path, generated_fm: dict) -> str:
+def plan_model_note(
+    path: Path,
+    generated_fm: dict,
+    prior_hashes: set[str] | frozenset[str] = frozenset(),
+) -> str:
     """Predict the write_model_note result without writing anything to disk.
 
     Used by dry-run ingest to report created/updated/unchanged counts.
@@ -280,7 +340,7 @@ def plan_model_note(path: Path, generated_fm: dict) -> str:
     if not path.exists():
         return "created"
     note = frontmatter.load(path)
-    merged = merge_frontmatter(dict(note.metadata), generated_fm)
+    merged = merge_frontmatter(dict(note.metadata), generated_fm, prior_hashes)
     return "unchanged" if merged == dict(note.metadata) else "updated"
 
 

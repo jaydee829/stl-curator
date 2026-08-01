@@ -8,7 +8,7 @@ import frontmatter
 
 from stl_curator.cache import Cache
 from stl_curator.config import Config
-from stl_curator.grouping import ModelGroup, group_folder, load_vocab
+from stl_curator.grouping import ModelGroup, Vocab, group_folder, load_vocab
 from stl_curator.meshfacts import MeshFacts, extract_mesh_facts
 from stl_curator.reports import write_duplicate_report, write_error_report
 from stl_curator.scan import FileRecord, scan_store
@@ -85,6 +85,26 @@ def _ensure_thumb(
     return None
 
 
+def _compute_groups(records: list[FileRecord], vocab: Vocab, cfg: Config) -> list[ModelGroup]:
+    """Compute the machine grouping for a set of scanned records.
+
+    Buckets stl records by containing folder and runs group_folder per folder,
+    in folder-sorted order. Shared by ingest and rebuild_cache so their notion
+    of "what the machine would group these files into" can never drift apart.
+    Non-stl records (images, zips, etc.) are ignored — group_folder only ever
+    consumes stl records.
+    """
+    by_folder: dict[str, list[FileRecord]] = defaultdict(list)
+    for rec in records:
+        if rec.kind == "stl":
+            folder = str(Path(rec.rel_path).parent)
+            by_folder[folder].append(rec)
+    groups: list[ModelGroup] = []
+    for folder in sorted(by_folder):
+        groups.extend(group_folder(by_folder[folder], vocab, cfg))
+    return groups
+
+
 def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
     summary = IngestSummary()
     errors: list[tuple[str, str]] = []
@@ -102,60 +122,65 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
         cache.upsert_file(rec)
     claimed = cache.claimed_hashes()
 
-    by_folder: dict[str, list[FileRecord]] = defaultdict(list)
     images_by_folder: dict[str, list[FileRecord]] = defaultdict(list)
     for rec in records:
-        folder = str(Path(rec.rel_path).parent)
-        if rec.kind == "stl":
-            by_folder[folder].append(rec)
-        elif rec.kind == "image":
+        if rec.kind == "image":
+            folder = str(Path(rec.rel_path).parent)
             images_by_folder[folder].append(rec)
 
     if not dry_run:
         cfg.vault_dir.mkdir(parents=True, exist_ok=True)
         write_vault_config(cfg.vault_dir)
 
-    for folder in sorted(by_folder):
-        stls = [r for r in by_folder[folder] if r.hash not in claimed]
-        for group in group_folder(stls, vocab, cfg):
-            summary.groups += 1
-            if group.assembly == "needs-review":
-                summary.needs_review += 1
-            facts = {m.record.hash: _mesh_facts_cached(cache, m.record) for m in group.members}
-            for h, f in facts.items():
-                if f.error:
-                    errors.append(
-                        (
-                            next(m.record.rel_path for m in group.members if m.record.hash == h),
-                            f.error,
-                        )
+    # Human-diverged (claimed) files are excluded from future regrouping: a
+    # file the human has already reassigned/removed must not be reabsorbed
+    # into a fresh machine grouping on the next ingest.
+    unclaimed = [r for r in records if r.hash not in claimed]
+    for group in _compute_groups(unclaimed, vocab, cfg):
+        folder = str(Path(group.members[0].record.rel_path).parent)
+        summary.groups += 1
+        if group.assembly == "needs-review":
+            summary.needs_review += 1
+        facts = {m.record.hash: _mesh_facts_cached(cache, m.record) for m in group.members}
+        for h, f in facts.items():
+            if f.error:
+                errors.append(
+                    (
+                        next(m.record.rel_path for m in group.members if m.record.hash == h),
+                        f.error,
                     )
-            thumb_rel = _ensure_thumb(
-                group, images_by_folder.get(folder, []), cfg, cache, dry_run, summary
-            )
-            fm = build_frontmatter(
-                group, cfg, facts, thumb_rel, footprints_dir_name=cfg.footprints_dir.name
-            )
-            creator, campaign = infer_creator_campaign(group.members[0].record.rel_path)
-            npath = resolve_note_path(cfg.vault_dir, creator, group.title, group.id)
-            if dry_run:
-                result = plan_model_note(npath, fm)
-            else:
-                result = write_model_note(npath, fm, group.title)
-                cache.upsert_group(
-                    group.id, [m.record.hash for m in group.members], group.confidence
                 )
-                ensure_entity_note(cfg.vault_dir, "creators", creator)
-                if campaign:
-                    ensure_entity_note(
-                        cfg.vault_dir, "campaigns", f"{creator} {campaign}", creator=creator
-                    )
-            if result == "created":
-                summary.created += 1
-            elif result == "updated":
-                summary.updated += 1
-            elif result == "unchanged":
-                summary.unchanged += 1
+        thumb_rel = _ensure_thumb(
+            group, images_by_folder.get(folder, []), cfg, cache, dry_run, summary
+        )
+        fm = build_frontmatter(
+            group, cfg, facts, thumb_rel, footprints_dir_name=cfg.footprints_dir.name
+        )
+        creator, campaign = infer_creator_campaign(group.members[0].record.rel_path)
+        group_hashes = {m.record.hash for m in group.members}
+        prior_hashes = cache.group_members(group.id)
+        npath = resolve_note_path(
+            cfg.vault_dir, creator, group.title, group.id, frozenset(group_hashes)
+        )
+        if dry_run:
+            result = plan_model_note(npath, fm, prior_hashes)
+        else:
+            result, final_hashes = write_model_note(npath, fm, group.title, prior_hashes)
+            human_claimed = final_hashes != group_hashes
+            cache.upsert_group(
+                group.id, sorted(final_hashes), group.confidence, human_claimed=human_claimed
+            )
+            ensure_entity_note(cfg.vault_dir, "creators", creator)
+            if campaign:
+                ensure_entity_note(
+                    cfg.vault_dir, "campaigns", f"{creator} {campaign}", creator=creator
+                )
+        if result == "created":
+            summary.created += 1
+        elif result == "updated":
+            summary.updated += 1
+        elif result == "unchanged":
+            summary.unchanged += 1
 
     summary.errors = len(errors)
     if not dry_run:
@@ -168,9 +193,16 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
 def rebuild_cache(cfg: Config) -> int:
     """Rebuild cache from disk and vault frontmatter.
 
-    Clears the cache, rescans the store, and restores all groups from vault notes.
-    All vault groups are marked as human_claimed=True since the vault is the
-    curated source of truth.
+    Clears the cache, rescans the store, and restores group rows from vault
+    notes. Divergence-aware: a note is only marked human_claimed=True if its
+    files membership actually diverges from what the machine would group the
+    same on-disk files into today (computed via the same _compute_groups path
+    ingest uses). A note whose membership exactly matches its same-id machine
+    group is restored as human_claimed=False, so a subsequent ingest still
+    PROCESSES it (rather than freezing it untouched) and can absorb new files
+    that land in its folder. A note whose id has no counterpart in the machine
+    grouping at all (e.g. the group was hand-edited into something the machine
+    would never produce) is, by definition, human-diverged and claimed=True.
 
     Args:
         cfg: Configuration containing store_root, vault_dir, and cache_db paths
@@ -181,8 +213,13 @@ def rebuild_cache(cfg: Config) -> int:
     cache = Cache(cfg.cache_db)
     try:
         cache.clear()
-        for rec in scan_store(cfg.store_root):
+        records = scan_store(cfg.store_root)
+        for rec in records:
             cache.upsert_file(rec)
+        vocab = load_vocab()
+        machine_hashes_by_id = {
+            g.id: {m.record.hash for m in g.members} for g in _compute_groups(records, vocab, cfg)
+        }
         restored = 0
         models_dir = cfg.vault_dir / "models"
         if models_dir.exists():
@@ -192,11 +229,14 @@ def rebuild_cache(cfg: Config) -> int:
                     fm = post.metadata
                     files = fm.get("files") or []
                     if fm.get("id") and files:
+                        note_hashes = {f["hash"] for f in files}
+                        machine_hashes = machine_hashes_by_id.get(fm["id"])
+                        human_claimed = machine_hashes is None or note_hashes != machine_hashes
                         cache.upsert_group(
                             fm["id"],
                             [f["hash"] for f in files],
                             fm.get("group_confidence", 1.0),
-                            human_claimed=True,
+                            human_claimed=human_claimed,
                         )
                         restored += 1
                 except Exception:  # noqa: BLE001, S112
