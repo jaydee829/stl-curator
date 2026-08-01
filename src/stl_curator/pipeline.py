@@ -4,6 +4,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import frontmatter
+
 from stl_curator.cache import Cache
 from stl_curator.config import Config
 from stl_curator.grouping import ModelGroup, group_folder, load_vocab
@@ -161,3 +163,43 @@ def ingest(cfg: Config, dry_run: bool = False) -> IngestSummary:
         write_error_report(errors, cfg.vault_dir)
     cache.close()
     return summary
+
+
+def rebuild_cache(cfg: Config) -> int:
+    """Rebuild cache from disk and vault frontmatter.
+
+    Clears the cache, rescans the store, and restores all groups from vault notes.
+    All vault groups are marked as human_claimed=True since the vault is the
+    curated source of truth.
+
+    Args:
+        cfg: Configuration containing store_root, vault_dir, and cache_db paths
+
+    Returns:
+        Count of notes restored from vault
+    """
+    cache = Cache(cfg.cache_db)
+    cache.clear()
+    for rec in scan_store(cfg.store_root):
+        cache.upsert_file(rec)
+    restored = 0
+    models_dir = cfg.vault_dir / "models"
+    if models_dir.exists():
+        for note_file in sorted(models_dir.glob("*.md")):
+            try:
+                post = frontmatter.load(note_file)
+                fm = post.metadata
+            except (OSError, ValueError, KeyError):
+                # Corrupt or unparseable note; skip it but continue processing others
+                continue
+            files = fm.get("files") or []
+            if fm.get("id") and files:
+                cache.upsert_group(
+                    fm["id"],
+                    [f["hash"] for f in files],
+                    fm.get("group_confidence", 1.0),
+                    human_claimed=True,
+                )
+                restored += 1
+    cache.close()
+    return restored
