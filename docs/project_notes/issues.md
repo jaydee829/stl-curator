@@ -34,8 +34,11 @@ This file tracks work history and ticket references.
   `Creator - Release/Model/file` layouts; STL_-prefix presupported variants split
   from plain variants into separate model notes due to a fuzzy-match threshold
   miss; thumbnail harvest is folder-scoped so most thumbs ended up GL-rendered
-  rather than harvested despite promo PNGs existing) are written up in full in
-  `.superpowers/sdd/2026-08-01-stl-curator-m1/task-15-report.md`.
+  rather than harvested despite promo PNGs existing) are preserved in
+  `docs/project_notes/m1-run-observations.md`; triaged follow-ups in
+  `docs/project_notes/m1-followups.md`. Final review added a fix wave
+  (human-regrouping claims, divergence-aware rebuild, path-scoped tombstones,
+  POSIX-safe long_path) before merge.
 
 ## Usage Tips
 
