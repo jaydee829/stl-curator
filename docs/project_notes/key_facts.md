@@ -16,8 +16,12 @@ This file tracks important project configuration, constants, and environment det
 - **Vault app**: Obsidian (reads the generated markdown vault; Dataview/Bases for queries)
 - **Repo split (ADR-002)**: code repo = public GitHub; `vault/` = separate private repo, gitignored in the code repo
 - **Primary Workflow**: `typer` CLI ingest pipeline run against the local STL store (planned)
-- **Sample data**: `example_stls/` — staging area for test models (being populated from cloud)
-- **Setup**: TBD once the package skeleton exists (`uv sync` will be the entry point)
+- **Sample data**: `example_stls/` — staging area for test models (populated with a real
+  386-file Archvillain Games release; verified end-to-end 2026-08-01, see
+  `docs/project_notes/issues.md` SETUP-002)
+- **Setup**: `uv sync` then `uv run stl-curator ingest --config config.toml`
+  (`config.toml` is gitignored — copy `config.example.toml` and point paths at your
+  local store/vault/thumbs/footprints/cache locations first)
 
 ## Technology Stack (planned)
 - **Storage**: local disk (STLs/zips/thumbnails, never in git); SQLite as rebuildable cache
