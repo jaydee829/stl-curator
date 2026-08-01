@@ -84,3 +84,75 @@ def test_group_id_stability(hashes_a, hashes_b, equal):
 def test_group_id_is_8_hex():
     gid = group_id(["h1"])
     assert len(gid) == 8 and int(gid, 16) >= 0
+
+
+def test_assembly_both_models_needs_review():
+    """
+    Multi-member group where every role is 'model' (two distinct-looking stems
+    that fuzzy-merge) should have assembly='needs-review'.
+
+    Cores: goblin_v2 vs goblins_v2, token_set_ratio=94.74 (>=80, so they merge).
+    Confidence: 94.74/100 = 0.947 (above threshold, so no coarse-collapse).
+    Both roles are 'model', so assembly='needs-review'.
+    """
+    groups = group_folder(recs("goblin_v2.stl", "goblins_v2.stl"), VOCAB, CFG)
+    assert len(groups) == 1
+    assert groups[0].assembly == "needs-review"
+
+
+def test_coarse_collapse_low_confidence():
+    """
+    When any group's confidence falls below group_confidence_min, the entire
+    folder collapses to a single 'needs-review' group.
+
+    Three cores that chain-merge:
+    - goblin vs goblins: 92.31
+    - goblin vs goblins_v2: 75.00 (below 80, but goblins merges with both)
+    - goblins vs goblins_v2: 82.35
+    Cluster: [goblin, goblins, goblins_v2] via merge chain
+    Mean pairwise: (92.31 + 75.00 + 82.35) / 3 = 83.22, conf = 0.832
+
+    With group_confidence_min=0.85, conf (0.832) < 0.85 triggers coarse-collapse.
+    Result: single group with all files, assembly='needs-review'.
+    """
+    cfg_high_threshold = Config(
+        store_root=Path("."),
+        vault_dir=Path("."),
+        thumbs_dir=Path("."),
+        footprints_dir=Path("."),
+        cache_db=Path(":memory:"),
+        group_confidence_min=0.85,
+    )
+    groups = group_folder(
+        recs("goblin.stl", "goblins.stl", "goblins_v2.stl"), VOCAB, cfg_high_threshold
+    )
+    assert len(groups) == 1
+    assert groups[0].assembly == "needs-review"
+    assert len(groups[0].members) == 3
+
+
+def test_ungrouped_fallback_title():
+    """
+    When coarse-collapse is triggered with top-level files (no parent folder),
+    the title should be "Ungrouped" (fallback for empty parent.name).
+
+    Uses top-level rel_paths like "goblin.stl" (parent="").
+    """
+    # Create records with top-level rel_paths (no folder prefix)
+    top_level_recs = [
+        FileRecord("goblin.stl", Path("goblin.stl"), "hash_goblin", 1, 1.0, "stl"),
+        FileRecord("goblins.stl", Path("goblins.stl"), "hash_goblins", 1, 1.0, "stl"),
+        FileRecord("goblins_v2.stl", Path("goblins_v2.stl"), "hash_goblins_v2", 1, 1.0, "stl"),
+    ]
+    cfg_high_threshold = Config(
+        store_root=Path("."),
+        vault_dir=Path("."),
+        thumbs_dir=Path("."),
+        footprints_dir=Path("."),
+        cache_db=Path(":memory:"),
+        group_confidence_min=0.85,
+    )
+    groups = group_folder(top_level_recs, VOCAB, cfg_high_threshold)
+    assert len(groups) == 1
+    assert groups[0].title == "Ungrouped"
+    assert groups[0].assembly == "needs-review"
