@@ -1,0 +1,12 @@
+variant_words = [
+  "pose", "alt", "variant", "sword", "spear", "axe", "bow", "shield",
+  "helmet", "helm", "hooded", "cape", "cloak", "left", "right",
+]
+part_words = [
+  "body", "head", "torso", "arm", "arms", "leg", "legs", "wing", "wings",
+  "tail", "base", "part", "half", "top", "bottom", "upper", "lower",
+]
+marker_words = [
+  "supported", "unsupported", "presupported", "presup", "sup", "hollow",
+  "solid", "lys", "fixed", "repaired", "final",
+]
