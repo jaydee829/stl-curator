@@ -52,8 +52,31 @@ New decisions start at ADR-001.
 - All commands run through `uv run`; contributors need uv installed.
 - One formatter/linter (ruff) keeps config to a single `pyproject.toml` section.
 
+### ADR-002: Public code repo; vault split out immediately as private repo (2026-08-01)
+
+**Context:**
+- User wants the code repo public. The vault's generated notes catalog owned
+  paid content (titles, creators, file manifests) — personal data that also
+  exposes paid-release contents; and git history is permanent once public.
+
+**Decision:**
+- Code repo (this repo) → public GitHub. `vault/` is gitignored here and
+  becomes its own **private** repo from day one (accelerates the planned
+  split; supersedes the M1 spec §2's "colocated now, split later").
+- Secrets/binaries remain gitignored as before (config.toml,
+  mmf_library.json, caches, STLs, thumbs, footprints).
+
+**Alternatives Considered:**
+- Private monorepo, split later -> delays public availability; risks vault
+  history landing in a repo that later flips public.
+
+**Consequences:**
+- Vault gets its own git lifecycle (init on first generation); code repo
+  carries only tool + specs + project notes.
+- Spec §2 split-readiness rules now apply from day one (they already held).
+
 <!--
-Add new ADRs below. Number them sequentially (ADR-002, ADR-003, ...).
+Add new ADRs below. Number them sequentially (ADR-003, ADR-004, ...).
 Never delete an ADR — if a decision changes, add a revision note with the new date
 and, if needed, a superseding ADR that references the old one.
 -->

@@ -21,3 +21,6 @@ dist/
 
 # SDD scratch workspace
 .superpowers/
+
+# Vault is its own private repo (ADR-002) — never committed here
+vault/

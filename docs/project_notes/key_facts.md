@@ -14,6 +14,7 @@ This file tracks important project configuration, constants, and environment det
 - **Package/env management**: `uv` — `uv sync` for deps, `uv run <cmd>` for everything
 - **Lint/format**: `ruff` as a uv dev dependency (`uv run ruff check`, `uv run ruff format`) — not installed globally
 - **Vault app**: Obsidian (reads the generated markdown vault; Dataview/Bases for queries)
+- **Repo split (ADR-002)**: code repo = public GitHub; `vault/` = separate private repo, gitignored in the code repo
 - **Primary Workflow**: `typer` CLI ingest pipeline run against the local STL store (planned)
 - **Sample data**: `example_stls/` — staging area for test models (being populated from cloud)
 - **Setup**: TBD once the package skeleton exists (`uv sync` will be the entry point)
