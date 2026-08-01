@@ -18,3 +18,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 dist/
+
+# SDD scratch workspace
+.superpowers/
